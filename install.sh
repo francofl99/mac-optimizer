@@ -17,18 +17,13 @@ done
 case "$SCHEDULE" in off|daily|weekly) ;; *) echo "--schedule debe ser off, daily o weekly"; exit 1 ;; esac
 
 mkdir -p "$DATA"/{runs,reports,docker,logs,backup} "$AGENTS"
+# Snapshots list processes, paths and project names: keep them private to the user.
+chmod 700 "$DATA"
 ln -sfn "$REPO" "$DATA/repo"
 
 for f in protected-volumes branch-volumes; do
   [ -f "$DATA/$f.txt" ] || cp "$REPO/config/$f.example.txt" "$DATA/$f.txt"
 done
-
-LEGACY="$HOME/.claude/repaso-sistema"
-if [ -d "$LEGACY" ] && [ ! -e "$DATA/.migrated" ]; then
-  cp -Rn "$LEGACY"/. "$DATA"/ 2>/dev/null || true
-  touch "$DATA/.migrated"
-  echo "✔ Datos migrados desde $LEGACY"
-fi
 
 SKILL="$HOME/.claude/skills/repaso-sistema"
 mkdir -p "$(dirname "$SKILL")"

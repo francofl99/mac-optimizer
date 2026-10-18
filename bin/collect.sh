@@ -124,7 +124,7 @@ echo "-- Loaded non-Apple user jobs (pid, label)"
 launchctl list 2>/dev/null | awk 'NR>1 && $3 !~ /^com\.apple\./ && $3 !~ /^application\.com\.apple/ {print $1"\t"$3}' | sort | head -40
 
 section "NATIVE SERVICES"
-pgrep -lf 'mysqld|postgres|redis-server|mongod' 2>/dev/null | cut -c1-120
+pgrep -l 'mysqld|postgres|redis-server|mongod' 2>/dev/null
 
 section "PROCESS COUNT"
 echo "Total processes: $(ps -A | wc -l | tr -d ' ')"
