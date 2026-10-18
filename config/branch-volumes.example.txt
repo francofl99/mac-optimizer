@@ -1,0 +1,3 @@
+# Per-branch / worktree copies of a dev DB (glob patterns). Suggested for deletion with medium risk.
+# Copied to ~/.mac-optimizer/branch-volumes.txt by install.sh.
+myapp-*_db-data

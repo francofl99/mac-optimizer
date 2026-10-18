@@ -1,0 +1,5 @@
+# Docker volumes that must NEVER be suggested for deletion (glob patterns, one per line).
+# Copied to ~/.mac-optimizer/protected-volumes.txt by install.sh. Volumes in use are always protected.
+myapp_db-data
+myapp_*backup*
+prod_*

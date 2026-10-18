@@ -1,0 +1,461 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf" content="__CSRF_TOKEN__">
+<title>Repaso del sistema</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --panel-2: #f1f3f6; --border: #e3e6eb;
+  --text: #16181d; --muted: #646b78; --faint: #9aa1ad;
+  --accent: #3b6cf6; --ok: #1f9d55; --warn: #d98a00; --bad: #d64545;
+  --ok-bg: #e7f6ee; --warn-bg: #fdf3e1; --bad-bg: #fbe9e9; --accent-bg: #e9effe;
+  --c1: #3b6cf6; --c2: #8b5cf6; --c3: #0ea5a4; --c4: #f59e0b; --c5: #ec4899; --c6: #64748b;
+  --radius: 12px; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0f1115; --panel: #171a20; --panel-2: #1e222a; --border: #2a2f39;
+    --text: #e8eaee; --muted: #9aa1ad; --faint: #6b7280;
+    --accent: #6b8fff; --ok: #3ccf7f; --warn: #f2b13c; --bad: #f06a6a;
+    --ok-bg: #15291f; --warn-bg: #2d2412; --bad-bg: #2e1718; --accent-bg: #1b2440;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; }
+header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
+.bar { max-width: 1280px; margin: 0 auto; padding: 12px 20px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+h1 { font-size: 17px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+.live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+.dot.stale { background: var(--faint); box-shadow: none; }
+.spacer { flex: 1; }
+select, button { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+button:hover, select:hover { border-color: var(--accent); }
+main { max-width: 1280px; margin: 0 auto; padding: 20px; display: grid; gap: 20px; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px 18px; min-width: 0; }
+.panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.panel h2 small { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--faint); }
+.summary { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.summary p { margin: 0; flex: 1 1 400px; font-size: 15px; }
+.big { font-size: 28px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.recover { text-align: right; }
+.recover .label { color: var(--muted); font-size: 12px; }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; }
+.kpi { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+.kpi .label { color: var(--muted); font-size: 12px; display: flex; justify-content: space-between; }
+.kpi .val { font-size: 24px; font-weight: 680; margin: 4px 0 2px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.kpi .sub { color: var(--muted); font-size: 12px; }
+.meter { height: 6px; background: var(--panel-2); border-radius: 4px; overflow: hidden; display: flex; margin-top: 10px; }
+.meter > span { display: block; height: 100%; }
+.badge { font-size: 11px; padding: 1px 7px; border-radius: 99px; font-weight: 600; }
+.b-ok { background: var(--ok-bg); color: var(--ok); } .b-warn { background: var(--warn-bg); color: var(--warn); } .b-bad { background: var(--bad-bg); color: var(--bad); }
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+.stack { display: grid; gap: 20px; }
+@media (max-width: 960px) { .grid2 { grid-template-columns: 1fr; } }
+.filters { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.chip { font-size: 12px; padding: 4px 10px; border-radius: 99px; border: 1px solid var(--border); background: transparent; color: var(--muted); }
+.chip.on { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.finding { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--panel); }
+.finding.done, .finding.ignored { opacity: .55; }
+.finding .top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.finding .title { font-weight: 620; flex: 1 1 200px; }
+.finding .impact { font-variant-numeric: tabular-nums; font-weight: 650; color: var(--accent); white-space: nowrap; }
+.finding .detail { color: var(--muted); margin: 6px 0 8px; }
+.area { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); background: var(--panel-2); padding: 2px 7px; border-radius: 5px; }
+.cmd { display: flex; gap: 6px; align-items: stretch; margin-bottom: 8px; }
+.cmd code { flex: 1; font: 12px/1.5 var(--mono); background: var(--panel-2); border-radius: 6px; padding: 6px 9px; overflow-x: auto; white-space: pre; }
+.cmd button { font-size: 12px; padding: 4px 9px; }
+.actions { display: flex; gap: 6px; }
+.actions button { font-size: 12px; padding: 3px 9px; }
+.actions button.sel { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.rows { display: grid; gap: 7px; }
+.row { display: grid; grid-template-columns: minmax(0, 150px) 1fr auto; gap: 10px; align-items: center; font-size: 13px; }
+.row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .track { height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; display: flex; }
+.row .track span { height: 100%; display: block; }
+.row .num { font-variant-numeric: tabular-nums; color: var(--muted); font-size: 12px; text-align: right; min-width: 64px; }
+.legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 10px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.tags { display: flex; flex-wrap: wrap; gap: 6px; }
+.tag { font-size: 12px; background: var(--panel-2); border-radius: 6px; padding: 3px 8px; }
+ul.changes { margin: 0; padding-left: 18px; color: var(--muted); }
+.empty { color: var(--faint); font-size: 13px; padding: 8px 0; }
+svg text { fill: var(--muted); font-size: 11px; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+button.primary:hover { filter: brightness(1.08); }
+button.danger { background: var(--bad); border-color: var(--bad); color: #fff; font-weight: 600; }
+button:disabled { opacity: .45; cursor: not-allowed; filter: none; }
+.manual { font-size: 11px; color: var(--faint); align-self: center; white-space: nowrap; }
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; z-index: 20; padding: 16px; }
+.modal-bg.open { display: flex; }
+.modal { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; width: min(680px, 100%); max-height: 90vh; display: flex; flex-direction: column; box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+.modal .mh { padding: 16px 18px 10px; display: flex; gap: 10px; align-items: center; }
+.modal .mh h3 { margin: 0; font-size: 16px; flex: 1; }
+.modal .mb { padding: 0 18px; overflow: auto; }
+.modal .mf { padding: 14px 18px; display: flex; gap: 8px; justify-content: flex-end; align-items: center; border-top: 1px solid var(--border); margin-top: 14px; flex-wrap: wrap; }
+.modal pre { font: 12px/1.5 var(--mono); background: var(--panel-2); border-radius: 8px; padding: 10px 12px; white-space: pre-wrap; word-break: break-all; margin: 8px 0; }
+.modal pre.log { max-height: 320px; overflow: auto; background: #0b0d10; color: #d6dae0; }
+.modal .warn { background: var(--warn-bg); color: var(--warn); border-radius: 8px; padding: 8px 12px; font-size: 13px; margin: 8px 0; }
+.modal input { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel); color: var(--text); width: 160px; }
+.modal .jobstate { flex: 1; font-size: 13px; color: var(--muted); }
+.spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: sp 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+@keyframes sp { to { transform: rotate(360deg); } }
+.dock { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 15; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 32px); }
+.chip-job { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 99px; padding: 6px 8px 6px 12px; box-shadow: 0 6px 20px rgba(0,0,0,.25); cursor: pointer; font-size: 13px; max-width: 320px; }
+.chip-job:hover { border-color: var(--accent); }
+.chip-job .jt { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chip-job .ji .spin { margin-right: 0; }
+.chip-job .jx { border: 0; background: transparent; padding: 0 6px; font-size: 16px; line-height: 1; color: var(--muted); }
+.chip-job.running { padding-right: 12px; border-color: var(--accent); }
+.chip-job.needs_input, .chip-job.error { border-color: var(--warn); }
+main { padding-bottom: 72px; }
+.toast { bottom: 70px !important; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg); padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; }
+.toast.show { opacity: 1; }
+@media (max-width: 600px) { .bar, main { padding-left: 16px; padding-right: 16px; } .row { grid-template-columns: minmax(0, 100px) 1fr auto; } .recover { text-align: left; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>Repaso del sistema</h1>
+    <span class="live"><span class="dot" id="dot"></span><span id="liveTs">conectando…</span></span>
+    <span class="spacer"></span>
+    <label class="live" for="reportSel">Repaso</label>
+    <select id="reportSel"></select>
+    <button id="refresh" title="Actualizar métricas en vivo">Actualizar</button>
+    <button id="analyze" class="primary" title="Recolectar datos y que Claude genere un repaso nuevo">Nuevo repaso</button>
+  </div>
+</header>
+
+<main>
+  <section class="panel summary" id="summary">
+    <p id="summaryText" class="empty">Todavía no hay repasos. Toca <b>Nuevo repaso</b> o pídele a Claude <code>/repaso-sistema</code>.</p>
+    <div class="recover"><div class="label">Recuperable estimado (pendiente)</div><div class="big" id="recoverable">—</div></div>
+  </section>
+
+  <section class="kpis" id="kpis"></section>
+
+  <div class="grid2">
+    <section class="panel">
+      <h2>Acciones sugeridas <small id="findCount"></small></h2>
+      <div class="filters" id="filters"></div>
+      <div id="findings"></div>
+    </section>
+
+    <div class="stack">
+      <section class="panel"><h2>RAM por app <small>en vivo</small></h2><div class="rows" id="ramApps"></div></section>
+      <section class="panel"><h2>CPU por app <small>en vivo · % de 1 núcleo</small></h2><div class="rows" id="cpuApps"></div></section>
+      <section class="panel"><h2>Impiden el reposo <small>en vivo</small></h2><div class="tags" id="blockers"></div></section>
+    </div>
+  </div>
+
+  <div class="grid2">
+    <section class="panel"><h2>Uso de disco <small id="diskSrc"></small></h2><div class="rows" id="diskRows"></div><div class="legend" id="diskLegend"></div></section>
+    <section class="panel"><h2>Docker / OrbStack <small id="dockerSrc"></small></h2><div class="rows" id="dockerRows"></div>
+      <div class="legend"><span><i style="background:var(--c4)"></i>recuperable</span><span><i style="background:var(--c1)"></i>en uso</span></div></section>
+  </div>
+
+  <div class="grid2">
+    <section class="panel"><h2>Historial <small>entre repasos</small></h2><div id="history"></div></section>
+    <section class="panel"><h2>Cambios vs repaso anterior</h2><div id="changes"></div></section>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+<div class="dock" id="dock" hidden></div>
+<div class="modal-bg" id="modalBg" role="dialog" aria-modal="true">
+  <div class="modal">
+    <div class="mh"><h3 id="mTitle"></h3><span id="mRisk"></span></div>
+    <div class="mb">
+      <div id="mDetail" style="color:var(--muted)"></div>
+      <div style="font-size:12px;color:var(--muted);margin-top:10px">Comando que se va a ejecutar:</div>
+      <pre id="mCmd"></pre>
+      <div id="mConfirm"></div>
+      <pre class="log" id="mLog" hidden></pre>
+    </div>
+    <div class="mf">
+      <span class="jobstate" id="mState"></span>
+      <button id="mMin" hidden title="Sigue corriendo en segundo plano">Minimizar</button>
+      <button id="mCancel">Cancelar</button>
+      <button id="mRun" class="primary">Ejecutar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const AREAS = { disk: "Disco", ram: "RAM", cpu: "CPU", battery: "Batería", startup: "Arranque" };
+const KIND_COLORS = { docker: "var(--c1)", cache: "var(--c4)", app: "var(--c2)", dev: "var(--c3)", user: "var(--c5)", system: "var(--c6)" };
+const KIND_LABELS = { docker: "Docker", cache: "Caché regenerable", app: "Datos de apps", dev: "Dev tooling", user: "Archivos", system: "Sistema" };
+const TOKEN = document.querySelector('meta[name="csrf"]').content;
+const post = (url, body) => fetch(url, { method: "POST", headers: { "Content-Type": "application/json", "X-Token": TOKEN }, body: JSON.stringify(body || {}) });
+let jobs = {}, viewJobId = null, jobTimer = null, pendingRun = null;
+const dismissed = new Set();
+let runningSig = "";
+let state = { findings: {} }, report = null, reports = [], areaFilter = "all", statusFilter = "pending";
+
+const fmtGB = g => g == null ? "—" : g >= 100 ? `${g.toFixed(0)} GB` : g >= 1 ? `${g.toFixed(1)} GB` : `${(g * 1024).toFixed(0)} MB`;
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const level = (v, warn, bad) => v >= bad ? "bad" : v >= warn ? "warn" : "ok";
+const toast = msg => { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1600); };
+
+function bars(el, items, max, color, fmt) {
+  el.innerHTML = items.length ? items.map(i => `
+    <div class="row"><span class="name" title="${esc(i.label)}">${esc(i.label)}</span>
+      <span class="track">${(i.parts || [{ v: i.v, c: i.c || color }]).map(p => `<span style="width:${Math.max(0, p.v / max * 100)}%;background:${p.c}"></span>`).join("")}</span>
+      <span class="num">${fmt(i)}</span></div>`).join("") : `<div class="empty">Sin datos</div>`;
+}
+
+function kpi(label, val, sub, lvl, meter) {
+  const badge = lvl ? `<span class="badge b-${lvl}">${{ ok: "OK", warn: "Atención", bad: "Crítico" }[lvl]}</span>` : "";
+  const m = meter ? `<div class="meter">${meter.map(p => `<span title="${esc(p.t)}" style="width:${p.v}%;background:${p.c}"></span>`).join("")}</div>` : "";
+  return `<div class="kpi"><div class="label"><span>${label}</span>${badge}</div><div class="val">${val}</div><div class="sub">${sub}</div>${m}</div>`;
+}
+
+function renderLive(d) {
+  const m = d.memory, b = d.battery, disk = d.disk, t = m.total_gb;
+  const usedPct = 100 - (m.free_pct ?? 0);
+  const swapPct = m.swap_total_gb ? m.swap_used_gb / m.swap_total_gb * 100 : 0;
+  const loadRatio = d.load[0] / d.cpus;
+  const diskPct = disk.used_gb / disk.total_gb * 100;
+  $("kpis").innerHTML = [
+    kpi("Memoria", `${m.free_pct ?? "—"}% libre`, `${fmtGB(m.compressed_gb)} comprimida · ${fmtGB(m.wired_gb)} wired`, level(usedPct, 70, 85), [
+      { v: m.wired_gb / t * 100, c: "var(--c2)", t: "wired" }, { v: m.active_gb / t * 100, c: "var(--c1)", t: "activa" },
+      { v: m.compressed_gb / t * 100, c: "var(--c4)", t: "comprimida" }, { v: m.inactive_gb / t * 100, c: "var(--c6)", t: "inactiva" }]),
+    kpi("Swap", fmtGB(m.swap_used_gb), `de ${fmtGB(m.swap_total_gb)} asignados`, level(m.swap_used_gb, 2, 6), [{ v: swapPct, c: "var(--bad)", t: "swap" }]),
+    kpi("Carga CPU", d.load[0].toFixed(1), `5m ${d.load[1]} · 15m ${d.load[2]} · ${d.cpus} núcleos`, level(loadRatio, .7, 1), [{ v: Math.min(100, loadRatio * 100), c: "var(--c1)", t: "carga/núcleos" }]),
+    kpi("Disco", `${fmtGB(disk.free_gb)} libres`, `${diskPct.toFixed(0)}% usado de ${fmtGB(disk.total_gb)}`, level(diskPct, 80, 92), [{ v: diskPct, c: "var(--c1)", t: "usado" }]),
+    kpi("Batería", `${b.max_capacity ?? "—"}% salud`, `${b.cycles ?? "—"} ciclos · ${b.percent ?? "—"}% · ${b.source === "AC" ? "cargador" : "batería"}`, b.max_capacity == null ? null : b.max_capacity < 80 ? "bad" : b.max_capacity < 85 ? "warn" : "ok", [{ v: b.max_capacity ?? 0, c: "var(--ok)", t: "capacidad máxima" }]),
+    kpi("Procesos", d.apps.process_count, `${d.docker?.running ?? 0} contenedores · VM ${fmtGB(d.docker?.vm_disk_gb)}`, level(d.apps.process_count, 500, 800)),
+  ].join("");
+  const ram = d.apps.by_ram.slice(0, 10);
+  bars($("ramApps"), ram.map(a => ({ label: a.name, v: a.mb, procs: a.procs })), Math.max(...ram.map(a => a.mb)), "var(--c2)", i => `${(i.v / 1024).toFixed(1)} GB · ${i.procs}p`);
+  const cpu = d.apps.by_cpu.filter(a => a.cpu > .5).slice(0, 10);
+  bars($("cpuApps"), cpu.map(a => ({ label: a.name, v: a.cpu })), Math.max(100, ...cpu.map(a => a.cpu)), "var(--c1)", i => `${i.v.toFixed(0)}%`);
+  $("blockers").innerHTML = b.sleep_blockers.length ? b.sleep_blockers.map(s => `<span class="tag">${esc(s)}</span>`).join("") : `<span class="empty">Nada impide el reposo</span>`;
+  $("liveTs").textContent = `en vivo · ${d.ts.slice(11, 19)}`;
+  $("dot").classList.remove("stale");
+}
+
+async function loadLive() {
+  try { renderLive(await (await fetch("/api/live")).json()); }
+  catch { $("dot").classList.add("stale"); $("liveTs").textContent = "sin conexión"; }
+}
+
+const statusOf = f => state.findings?.[f.id]?.status || "pending";
+
+function renderFindings() {
+  const fs = report?.findings || [];
+  const areas = ["all", ...new Set(fs.map(f => f.area))];
+  const counts = { pending: 0, done: 0, ignored: 0 };
+  fs.forEach(f => counts[statusOf(f)]++);
+  $("filters").innerHTML =
+    areas.map(a => `<button class="chip ${a === areaFilter ? "on" : ""}" data-area="${a}">${a === "all" ? "Todas" : AREAS[a] || a}</button>`).join("") +
+    `<span style="width:10px"></span>` +
+    [["pending", "Pendientes"], ["done", "Hechas"], ["ignored", "Ignoradas"]].map(([s, l]) => `<button class="chip ${s === statusFilter ? "on" : ""}" data-status="${s}">${l} ${counts[s]}</button>`).join("");
+  const shown = fs.filter(f => (areaFilter === "all" || f.area === areaFilter) && statusOf(f) === statusFilter);
+  $("findings").innerHTML = shown.length ? shown.map(f => {
+    const st = statusOf(f), risk = { bajo: "ok", medio: "warn", alto: "bad" }[f.risk] || "warn";
+    return `<div class="finding ${st}">
+      <div class="top"><span class="area">${AREAS[f.area] || f.area}</span><span class="title">${esc(f.title)}</span>
+        <span class="badge b-${risk}">riesgo ${esc(f.risk)}</span><span class="impact">${esc(f.impact)}</span></div>
+      <div class="detail">${esc(f.detail)}</div>
+      ${f.command ? `<div class="cmd"><code>${esc(f.command)}</code><button data-copy="${esc(f.command)}">Copiar</button>${
+        /\bsudo\b/.test(f.command) ? `<span class="manual">requiere sudo</span>` : (runningFor(f.id) ? `<button data-open-job="${runningFor(f.id).id}"><span class="spin"></span>Ejecutando</button>` : `<button class="primary" data-run="${esc(f.id)}">Ejecutar</button>`)}</div>` : ""}
+      <div class="actions">${[["pending", "Pendiente"], ["done", "Hecho"], ["ignored", "Ignorar"]].map(([s, l]) => `<button class="${s === st ? "sel" : ""}" data-id="${esc(f.id)}" data-set="${s}">${l}</button>`).join("")}</div>
+    </div>`;
+  }).join("") : `<div class="empty">${fs.length ? "Nada en este filtro." : "Sin hallazgos en este repaso."}</div>`;
+  $("findCount").textContent = fs.length ? `${counts.pending} pendientes de ${fs.length}` : "";
+  const rec = fs.filter(f => statusOf(f) === "pending").reduce((s, f) => s + (f.savings_gb || 0), 0);
+  $("recoverable").textContent = report ? fmtGB(rec) : "—";
+}
+
+function renderReport() {
+  if (!report) return;
+  $("summaryText").className = "";
+  $("summaryText").innerHTML = `<span class="badge b-${report.health || "warn"}" style="margin-right:8px">${{ ok: "Sano", warn: "Mejorable", bad: "Crítico" }[report.health || "warn"]}</span>${esc(report.summary)}`;
+  renderFindings();
+  const disk = (report.disk_breakdown || []).slice().sort((a, b) => b.gb - a.gb);
+  $("diskSrc").textContent = `repaso ${report.date?.slice(0, 16).replace("T", " ")}`;
+  bars($("diskRows"), disk.map(x => ({ label: x.label, v: x.gb, c: KIND_COLORS[x.kind] || "var(--c6)" })), Math.max(...disk.map(x => x.gb), 1), "", i => fmtGB(i.v));
+  const kinds = [...new Set(disk.map(x => x.kind))];
+  $("diskLegend").innerHTML = kinds.map(k => `<span><i style="background:${KIND_COLORS[k] || "var(--c6)"}"></i>${KIND_LABELS[k] || k}</span>`).join("");
+  const dk = report.docker;
+  if (dk) {
+    const rows = [["Imágenes", dk.images_gb, dk.images_reclaim_gb], ["Volúmenes", dk.volumes_gb, dk.volumes_reclaim_gb], ["Build cache", dk.build_cache_gb, dk.build_cache_reclaim_gb]];
+    const max = Math.max(...rows.map(r => r[1]));
+    bars($("dockerRows"), rows.map(([l, tot, rec]) => ({ label: l, tot, rec, parts: [{ v: rec, c: "var(--c4)" }, { v: tot - rec, c: "var(--c1)" }] })), max, "", i => `${fmtGB(i.rec)} / ${fmtGB(i.tot)}`);
+    $("dockerSrc").textContent = `${dk.running ?? "?"} contenedores · disco VM ${fmtGB(dk.vm_disk_gb)}`;
+  } else $("dockerRows").innerHTML = `<div class="empty">Sin datos de Docker</div>`;
+  $("changes").innerHTML = report.changes?.length ? `<ul class="changes">${report.changes.map(c => `<li>${esc(c)}</li>`).join("")}</ul>` : `<div class="empty">Primer repaso: nada con qué comparar todavía.</div>`;
+}
+
+function renderHistory() {
+  const pts = reports.slice().reverse().filter(r => r.metrics);
+  if (pts.length < 2) { $("history").innerHTML = `<div class="empty">Se necesitan al menos 2 repasos. Hay ${pts.length}.</div>`; return; }
+  const series = [["disk_free_gb", "Disco libre", "var(--c1)"], ["swap_used_gb", "Swap", "var(--bad)"], ["compressed_gb", "RAM comprimida", "var(--c4)"]];
+  const W = 560, H = 170, P = 28, max = Math.max(...pts.flatMap(p => series.map(s => p.metrics[s[0]] || 0)));
+  const x = i => P + i * (W - 2 * P) / (pts.length - 1), y = v => H - P - (v / max) * (H - 2 * P);
+  const lines = series.map(([k, , c]) => `<polyline fill="none" stroke="${c}" stroke-width="2" points="${pts.map((p, i) => `${x(i)},${y(p.metrics[k] || 0)}`).join(" ")}"/>` +
+    pts.map((p, i) => `<circle cx="${x(i)}" cy="${y(p.metrics[k] || 0)}" r="3" fill="${c}"><title>${k}: ${fmtGB(p.metrics[k])}</title></circle>`).join("")).join("");
+  const labels = pts.map((p, i) => `<text x="${x(i)}" y="${H - 8}" text-anchor="middle">${(p.date || p.id).slice(5, 10)}</text>`).join("");
+  $("history").innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="Historial"><line x1="${P}" x2="${W - P}" y1="${H - P}" y2="${H - P}" stroke="var(--border)"/>${lines}${labels}<text x="${P}" y="14">${fmtGB(max)}</text></svg>
+    <div class="legend">${series.map(([, l, c]) => `<span><i style="background:${c}"></i>${l}</span>`).join("")}</div>`;
+}
+
+async function selectReport(id) {
+  report = id ? await (await fetch(`/api/reports/${id}`)).json() : null;
+  renderReport();
+}
+
+async function init() {
+  [reports, state] = await Promise.all([fetch("/api/reports").then(r => r.json()), fetch("/api/state").then(r => r.json())]);
+  $("reportSel").innerHTML = reports.length ? reports.map(r => `<option value="${r.id}">${(r.date || r.id).slice(0, 16).replace("T", " ")}</option>`).join("") : `<option>sin repasos</option>`;
+  renderHistory();
+  if (reports.length) await selectReport(reports[0].id); else renderFindings();
+}
+
+document.addEventListener("click", async e => {
+  const t = e.target.closest("button"); if (!t) return;
+  if (t.dataset.area) { areaFilter = t.dataset.area; renderFindings(); }
+  else if (t.dataset.status) { statusFilter = t.dataset.status; renderFindings(); }
+  else if (t.dataset.run) openRun(report.findings.find(f => f.id === t.dataset.run));
+  else if (t.dataset.openJob) openJob(t.dataset.openJob);
+  else if (t.dataset.copy) { await navigator.clipboard.writeText(t.dataset.copy); toast("Comando copiado"); }
+  else if (t.dataset.set) {
+    state = await (await post(`/api/findings/${encodeURIComponent(t.dataset.id)}`, { status: t.dataset.set })).json();
+    renderFindings(); toast({ done: "Marcado como hecho", ignored: "Claude no lo volverá a sugerir", pending: "Vuelve a pendientes" }[t.dataset.set]);
+  }
+});
+const JOB_LABEL = {
+  running: () => `<span class="spin"></span>Ejecutando…`,
+  ok: j => j.finding === "__analysis__" ? `✔ Repaso generado en ${j.duration}s` : `✔ Terminó OK en ${j.duration}s · marcado como hecho`,
+  needs_input: j => `⚠ El comando pidió confirmación interactiva y se cortó (código ${j.code}). Probablemente no se aplicó nada.`,
+  error: j => `✘ Falló (código ${j.code}) en ${j.duration}s`,
+  cancelled: () => `Detenido`,
+};
+const JOB_ICON = { running: `<span class="spin"></span>`, ok: "✔", needs_input: "⚠", error: "✘", cancelled: "■" };
+const JOB_COLOR = { ok: "var(--ok)", needs_input: "var(--warn)", error: "var(--bad)" };
+const runningFor = id => Object.values(jobs).find(j => j.finding === id && j.status === "running");
+
+function openRun(f) {
+  pendingRun = f; viewJobId = null;
+  const risky = f.risk !== "bajo";
+  $("mTitle").textContent = f.title;
+  $("mRisk").innerHTML = `<span class="badge b-${{ bajo: "ok", medio: "warn", alto: "bad" }[f.risk] || "warn"}">riesgo ${esc(f.risk)}</span>`;
+  $("mDetail").textContent = f.detail || "";
+  $("mCmd").textContent = f.command;
+  $("mConfirm").innerHTML = risky
+    ? `<div class="warn">Riesgo ${esc(f.risk)}: revisa el comando. Escribe <b>EJECUTAR</b> para confirmar.</div><input id="mInput" autocomplete="off" placeholder="EJECUTAR">`
+    : f.analysis ? "" : `<div class="warn">Se ejecuta en tu Mac con tu usuario. No se puede deshacer desde acá.</div>`;
+  $("mLog").hidden = true; $("mLog").textContent = "";
+  $("mState").textContent = "";
+  $("mRun").hidden = false; $("mRun").className = risky ? "danger" : "primary"; $("mRun").disabled = risky;
+  $("mMin").hidden = true;
+  $("mCancel").textContent = "Cancelar";
+  $("modalBg").classList.add("open");
+  if (risky) { const i = $("mInput"); i.focus(); i.addEventListener("input", () => $("mRun").disabled = i.value.trim() !== "EJECUTAR"); }
+  else $("mRun").focus();
+}
+
+async function openJob(id) {
+  const j = jobs[id]; if (!j) return;
+  const f = report?.findings.find(x => x.id === j.finding);
+  pendingRun = null; viewJobId = id;
+  $("mTitle").textContent = j.title;
+  $("mRisk").innerHTML = f ? `<span class="badge b-${{ bajo: "ok", medio: "warn", alto: "bad" }[f.risk] || "warn"}">riesgo ${esc(f.risk)}</span>` : "";
+  $("mDetail").textContent = f?.detail || "";
+  $("mCmd").textContent = j.command;
+  $("mConfirm").innerHTML = "";
+  $("modalBg").classList.add("open");
+  await refreshViewedJob();
+}
+
+async function refreshViewedJob() {
+  if (!viewJobId) return;
+  const j = await (await fetch(`/api/jobs/${viewJobId}`)).json();
+  if (j.id !== viewJobId) return;
+  jobs[j.id] = { ...jobs[j.id], ...j };
+  const log = $("mLog");
+  const atBottom = log.hidden || log.scrollTop + log.clientHeight >= log.scrollHeight - 20;
+  log.hidden = false; log.textContent = j.output || "(sin salida todavía)";
+  if (atBottom) log.scrollTop = log.scrollHeight;
+  $("mState").innerHTML = JOB_LABEL[j.status](j);
+  $("mState").style.color = JOB_COLOR[j.status] || "";
+  $("mRun").hidden = true;
+  $("mMin").hidden = j.status !== "running";
+  $("mCancel").textContent = j.status === "running" ? "Detener" : "Cerrar";
+}
+
+function renderDock() {
+  const list = Object.values(jobs).filter(j => !dismissed.has(j.id)).sort((a, b) => a.started.localeCompare(b.started));
+  $("dock").hidden = !list.length;
+  $("dock").innerHTML = list.map(j => `
+    <div class="chip-job ${j.status}" data-job="${j.id}" title="${esc(j.command)}">
+      <span class="ji" style="color:${JOB_COLOR[j.status] || "inherit"}">${JOB_ICON[j.status]}</span>
+      <span class="jt">${esc(j.title)}</span>
+      ${j.status === "running" ? "" : `<button class="jx" data-dismiss="${j.id}" aria-label="Quitar">×</button>`}
+    </div>`).join("");
+}
+
+async function onJobFinished(j) {
+  toast(`${JOB_ICON[j.status] === "✔" ? "✔" : JOB_ICON[j.status]} ${j.title}`);
+  if (j.finding === "__analysis__") { if (j.status === "ok") await init(); return; }
+  state = await (await fetch("/api/state")).json(); renderFindings(); loadLive();
+}
+
+async function pollJobs() {
+  try {
+    const list = await (await fetch("/api/jobs")).json();
+    for (const j of list) {
+      const prev = jobs[j.id];
+      if (!prev && j.status !== "running" && Date.now() - new Date(j.started) > 10 * 60e3) dismissed.add(j.id);
+      jobs[j.id] = { ...prev, ...j };
+      if (prev?.status === "running" && j.status !== "running") onJobFinished(j);
+    }
+    renderDock();
+    if (viewJobId && $("modalBg").classList.contains("open")) await refreshViewedJob();
+    const sig = Object.values(jobs).filter(j => j.status === "running").map(j => j.id).sort().join();
+    if (sig !== runningSig) { runningSig = sig; renderFindings(); }
+  } finally {
+    const busy = Object.values(jobs).some(j => j.status === "running");
+    clearTimeout(jobTimer); jobTimer = setTimeout(pollJobs, busy ? 1200 : 5000);
+  }
+}
+
+const closeModal = () => { $("modalBg").classList.remove("open"); viewJobId = null; pendingRun = null; };
+
+$("mRun").addEventListener("click", async () => {
+  $("mRun").disabled = true;
+  const r = pendingRun.analysis ? await post("/api/analyze") : await post("/api/run", { report: report.id, finding: pendingRun.id });
+  const body = await r.json();
+  if (!r.ok) { $("mState").textContent = body.error; $("mState").style.color = "var(--bad)"; $("mRun").disabled = false; return; }
+  jobs[body.id] = body; dismissed.delete(body.id);
+  $("mConfirm").innerHTML = "";
+  viewJobId = body.id; renderDock(); renderFindings(); await refreshViewedJob(); pollJobs();
+});
+$("mMin").addEventListener("click", closeModal);
+$("mCancel").addEventListener("click", async () => {
+  const j = viewJobId && jobs[viewJobId];
+  if (j?.status === "running") { await post(`/api/jobs/${j.id}/cancel`); return; }
+  closeModal();
+});
+$("modalBg").addEventListener("click", e => { if (e.target === $("modalBg") && (viewJobId || !pendingRun)) closeModal(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+$("dock").addEventListener("click", e => {
+  const x = e.target.closest("[data-dismiss]");
+  if (x) { dismissed.add(x.dataset.dismiss); renderDock(); e.stopPropagation(); return; }
+  const c = e.target.closest("[data-job]"); if (c) openJob(c.dataset.job);
+});
+
+$("reportSel").addEventListener("change", e => selectReport(e.target.value));
+$("refresh").addEventListener("click", loadLive);
+$("analyze").addEventListener("click", () => openRun({ analysis: true, title: "Nuevo repaso", risk: "bajo", command: "bin/analyze.sh  →  collect.sh + claude -p (solo lectura)",
+  detail: "Recolecta procesos, memoria, disco, batería y Docker (~3–4 min) y Claude escribe un reporte nuevo en modo headless. No ejecuta ninguna acción de limpieza." }));
+
+init().then(pollJobs); loadLive(); setInterval(loadLive, 15000);
+</script>
+</body>
+</html>
