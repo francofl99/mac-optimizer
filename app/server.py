@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """mac-optimizer dashboard. Usage: server.py [--port N] | --metrics"""
+import collections
 import json
 import os
 import re
@@ -12,6 +13,7 @@ import sys
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import schedule
 
@@ -79,14 +81,18 @@ def top_apps(limit=12):
 _battery_cache = {"t": 0, "v": {}}
 
 
-def battery():
+def battery_now():
     out = sh(["pmset", "-g", "batt"])
     pct = re.search(r"(\d+)%", out)
-    v = {
+    return {
         "percent": int(pct.group(1)) if pct else None,
         "source": "AC" if "AC Power" in out else "Battery",
         "state": (re.search(r"%; ([^;]+);", out) or [None, None])[1],
     }
+
+
+def battery():
+    v = battery_now()
     if time.time() - _battery_cache["t"] > 600:
         prof = sh(["system_profiler", "SPPowerDataType"], timeout=30)
         cyc = re.search(r"Cycle Count: (\d+)", prof)
@@ -113,19 +119,76 @@ def docker():
     return {"running": len(names), "containers": names, "vm_disk_gb": vm_disk}
 
 
-def metrics():
+_machine = {}
+
+
+def machine():
+    if not _machine:
+        hw = sh(["system_profiler", "SPHardwareDataType"], timeout=30)
+        field = lambda k: (re.search(rf"{k}: (.+)", hw) or [None, None])[1]
+        _machine.update(model=field("Model Name"), chip=field("Chip") or field("Processor Name"),
+                        macos=sh(["sw_vers", "-productVersion"]).strip() or None)
+    return _machine
+
+
+def disk():
     du = shutil.disk_usage("/System/Volumes/Data")
+    return {"total_gb": du.total / GB, "used_gb": du.used / GB, "free_gb": du.free / GB}
+
+
+def metrics():
     load = os.getloadavg()
     return {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
         "cpus": os.cpu_count(),
+        "machine": machine(),
         "load": [round(x, 2) for x in load],
         "memory": memory(),
-        "disk": {"total_gb": du.total / GB, "used_gb": du.used / GB, "free_gb": du.free / GB},
+        "disk": disk(),
         "battery": battery(),
         "apps": top_apps(),
         "docker": docker(),
     }
+
+
+SAMPLE_EVERY = 15
+HISTORY = collections.deque(maxlen=24 * 3600 // SAMPLE_EVERY)
+WINDOWS = {"15m": 900, "1h": 3600}
+MAX_POINTS = 240
+
+
+def sample():
+    m = memory()
+    return {
+        "t": int(time.time()),
+        "mem": 100 - m["free_pct"] if m["free_pct"] is not None else None,
+        "load": round(os.getloadavg()[0], 2),
+        "swap": round(m["swap_used_gb"], 3),
+        "disk": round(disk()["free_gb"], 2),
+        "batt": battery_now()["percent"],
+    }
+
+
+def sampler():
+    while True:
+        try:
+            HISTORY.append(sample())
+        except Exception:
+            pass
+        time.sleep(SAMPLE_EVERY)
+
+
+def boot_time():
+    m = re.search(r"sec = (\d+)", sh(["sysctl", "-n", "kern.boottime"]))
+    return int(m.group(1)) if m else 0
+
+
+def history(window):
+    since = boot_time() if window == "boot" else int(time.time()) - WINDOWS.get(window, 900)
+    pts = [s for s in list(HISTORY) if s["t"] >= since]
+    step = max(1, -(-len(pts) // MAX_POINTS))
+    picked = pts[::-1][::step][::-1]
+    return {"window": window, "since": since, "now": int(time.time()), "every": SAMPLE_EVERY, "samples": picked}
 
 
 def load_state():
@@ -239,12 +302,15 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.host_ok():
             return self.send(403, {"error": "host no permitido"})
-        path = self.path.split("?")[0]
+        url = urlsplit(self.path)
+        path = url.path
         if path in ("/", "/index.html"):
             html = DASHBOARD.read_text().replace("__CSRF_TOKEN__", self.token)
             return self.send(200, html.encode(), "text/html; charset=utf-8")
         if path == "/api/live":
             return self.send(200, metrics())
+        if path == "/api/live/history":
+            return self.send(200, history(parse_qs(url.query).get("window", ["15m"])[0]))
         if path == "/api/reports":
             return self.send(200, list_reports())
         if path == "/api/state":
@@ -298,5 +364,6 @@ if __name__ == "__main__":
     RUN_ENV.update(os.environ, PATH=schedule.user_path(), HOMEBREW_NO_AUTO_UPDATE="1")
     Handler.token = secrets.token_urlsafe(24)
     Handler.allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
+    threading.Thread(target=sampler, daemon=True).start()
     print(f"Repaso dashboard: http://localhost:{port}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
