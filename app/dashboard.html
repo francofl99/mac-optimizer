@@ -23,6 +23,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; }
 header { position: sticky; top: 0; z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); border-bottom: 1px solid var(--border); }
 .bar { max-width: 1280px; margin: 0 auto; padding: 12px 20px; display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
@@ -102,6 +103,11 @@ button:disabled { opacity: .45; cursor: not-allowed; filter: none; }
 .modal .jobstate { flex: 1; font-size: 13px; color: var(--muted); }
 .spin { display: inline-block; width: 12px; height: 12px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: sp 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
 @keyframes sp { to { transform: rotate(360deg); } }
+.form { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 4px 0 12px; }
+.form label { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
+.form select, .form input { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; width: 100%; }
+.sched-info { font-size: 13px; color: var(--muted); margin-bottom: 4px; display: grid; gap: 2px; }
+#schedBtn.on { border-color: var(--ok); }
 .dock { position: fixed; left: 50%; transform: translateX(-50%); bottom: 16px; z-index: 15; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 32px); }
 .chip-job { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 99px; padding: 6px 8px 6px 12px; box-shadow: 0 6px 20px rgba(0,0,0,.25); cursor: pointer; font-size: 13px; max-width: 320px; }
 .chip-job:hover { border-color: var(--accent); }
@@ -125,6 +131,7 @@ main { padding-bottom: 72px; }
     <span class="spacer"></span>
     <label class="live" for="reportSel">Repaso</label>
     <select id="reportSel"></select>
+    <button id="schedBtn" title="Programar el repaso automático">Rutina: …</button>
     <button id="refresh" title="Actualizar métricas en vivo">Actualizar</button>
     <button id="analyze" class="primary" title="Recolectar datos y que Claude genere un repaso nuevo">Nuevo repaso</button>
   </div>
@@ -165,6 +172,29 @@ main { padding-bottom: 72px; }
 </main>
 <div class="toast" id="toast"></div>
 <div class="dock" id="dock" hidden></div>
+<div class="modal-bg" id="schedBg" role="dialog" aria-modal="true" aria-labelledby="schedTitle">
+  <div class="modal" style="width:min(460px,100%)">
+    <div class="mh"><h3 id="schedTitle">Rutina automática</h3></div>
+    <div class="mb">
+      <div class="form">
+        <label>Frecuencia
+          <select id="sMode"><option value="off">Desactivada</option><option value="daily">Todos los días</option><option value="weekly">Una vez por semana</option></select>
+        </label>
+        <label id="sDayWrap">Día
+          <select id="sDay"></select>
+        </label>
+        <label>Hora <input type="time" id="sTime" value="20:00" step="300"></label>
+      </div>
+      <div class="sched-info" id="sInfo"></div>
+      <div class="warn">Corre <code>bin/analyze.sh</code> en modo headless (solo lectura, no ejecuta limpiezas). Si el Mac está dormido a esa hora, corre al despertar; si está apagado, se saltea.</div>
+    </div>
+    <div class="mf">
+      <span class="jobstate" id="sState"></span>
+      <button id="sCancel">Cancelar</button>
+      <button id="sSave" class="primary">Guardar</button>
+    </div>
+  </div>
+</div>
 <div class="modal-bg" id="modalBg" role="dialog" aria-modal="true">
   <div class="modal">
     <div class="mh"><h3 id="mTitle"></h3><span id="mRisk"></span></div>
@@ -443,11 +473,60 @@ $("mCancel").addEventListener("click", async () => {
   closeModal();
 });
 $("modalBg").addEventListener("click", e => { if (e.target === $("modalBg") && (viewJobId || !pendingRun)) closeModal(); });
-document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape") { closeModal(); $("schedBg").classList.remove("open"); } });
 $("dock").addEventListener("click", e => {
   const x = e.target.closest("[data-dismiss]");
   if (x) { dismissed.add(x.dataset.dismiss); renderDock(); e.stopPropagation(); return; }
   const c = e.target.closest("[data-job]"); if (c) openJob(c.dataset.job);
+});
+
+const DAYS = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+const fmtWhen = iso => iso ? new Date(iso).toLocaleString("es", { weekday: "long", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+const pad = n => String(n).padStart(2, "0");
+let sched = null;
+
+function schedLabel(sc) {
+  if (!sc || sc.mode === "off") return "Rutina: desactivada";
+  const t = `${pad(sc.hour)}:${pad(sc.minute)}`;
+  return sc.mode === "daily" ? `Rutina: diaria ${t}` : `Rutina: ${DAYS[sc.weekday].slice(0, 3).toLowerCase()} ${t}`;
+}
+
+async function loadSchedule() {
+  sched = await (await fetch("/api/schedule")).json();
+  $("schedBtn").textContent = schedLabel(sched);
+  $("schedBtn").classList.toggle("on", sched.mode !== "off" && sched.loaded);
+}
+
+function syncSchedForm() {
+  $("sDayWrap").hidden = $("sMode").value !== "weekly";
+  $("sTime").disabled = $("sMode").value === "off";
+}
+
+function openSched() {
+  $("sDay").innerHTML = DAYS.map((d, i) => `<option value="${i}">${d}</option>`).join("");
+  $("sMode").value = sched?.mode || "weekly";
+  $("sDay").value = sched?.weekday ?? 0;
+  $("sTime").value = sched?.hour != null ? `${pad(sched.hour)}:${pad(sched.minute)}` : "20:00";
+  $("sInfo").innerHTML = `<span>Próxima ejecución: <b>${fmtWhen(sched?.next_run)}</b></span><span>Última ejecución: ${fmtWhen(sched?.last_run)}</span>`;
+  $("sState").textContent = "";
+  syncSchedForm();
+  $("schedBg").classList.add("open");
+}
+
+$("schedBtn").addEventListener("click", openSched);
+$("sMode").addEventListener("change", syncSchedForm);
+$("sCancel").addEventListener("click", () => $("schedBg").classList.remove("open"));
+$("schedBg").addEventListener("click", e => { if (e.target === $("schedBg")) $("schedBg").classList.remove("open"); });
+$("sSave").addEventListener("click", async () => {
+  const [hour, minute] = $("sTime").value.split(":").map(Number);
+  $("sSave").disabled = true;
+  const r = await post("/api/schedule", { mode: $("sMode").value, weekday: Number($("sDay").value), hour, minute });
+  const body = await r.json();
+  $("sSave").disabled = false;
+  if (!r.ok) { $("sState").textContent = body.error; $("sState").style.color = "var(--bad)"; return; }
+  sched = body; await loadSchedule();
+  $("schedBg").classList.remove("open");
+  toast(body.mode === "off" ? "Rutina desactivada" : `Próximo repaso: ${fmtWhen(body.next_run)}`);
 });
 
 $("reportSel").addEventListener("change", e => selectReport(e.target.value));
@@ -455,7 +534,7 @@ $("refresh").addEventListener("click", loadLive);
 $("analyze").addEventListener("click", () => openRun({ analysis: true, title: "Nuevo repaso", risk: "bajo", command: "bin/analyze.sh  →  collect.sh + claude -p (solo lectura)",
   detail: "Recolecta procesos, memoria, disco, batería y Docker (~3–4 min) y Claude escribe un reporte nuevo en modo headless. No ejecuta ninguna acción de limpieza." }));
 
-init().then(pollJobs); loadLive(); setInterval(loadLive, 15000);
+init().then(pollJobs); loadLive(); loadSchedule(); setInterval(loadLive, 15000);
 </script>
 </body>
 </html>

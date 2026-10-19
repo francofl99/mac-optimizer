@@ -1,20 +1,22 @@
 #!/bin/bash
-# Usage: ./install.sh [--schedule off|daily|weekly] [--hour 0-23] [--port 8765]
+# Usage: ./install.sh [--schedule off|daily|weekly] [--weekday 0-6 (0=domingo)] [--hour 0-23] [--port 8765]
+# Without --schedule the current schedule is kept (it can also be edited from the dashboard).
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")" && pwd)"
 DATA="${MAC_OPTIMIZER_HOME:-$HOME/.mac-optimizer}"
 AGENTS="$HOME/Library/LaunchAgents"
-SCHEDULE=off HOUR=10 PORT=8765
+SCHEDULE=keep WEEKDAY=1 HOUR=10 PORT=8765
 while [ $# -gt 0 ]; do
   case "$1" in
     --schedule) SCHEDULE="$2"; shift 2 ;;
     --hour) HOUR="$2"; shift 2 ;;
+    --weekday) WEEKDAY="$2"; shift 2 ;;
     --port) PORT="$2"; shift 2 ;;
     *) echo "Opción desconocida: $1"; exit 1 ;;
   esac
 done
-case "$SCHEDULE" in off|daily|weekly) ;; *) echo "--schedule debe ser off, daily o weekly"; exit 1 ;; esac
+case "$SCHEDULE" in keep|off|daily|weekly) ;; *) echo "--schedule debe ser off, daily o weekly"; exit 1 ;; esac
 
 mkdir -p "$DATA"/{runs,reports,docker,logs,backup} "$AGENTS"
 # Snapshots list processes, paths and project names: keep them private to the user.
@@ -73,17 +75,18 @@ write_plist com.mac-optimizer.dashboard \
 load_agent com.mac-optimizer.dashboard
 echo "✔ Dashboard en http://localhost:$PORT (arranca con el login)"
 
-ANALYSIS=com.mac-optimizer.analysis
-if [ "$SCHEDULE" = off ]; then
-  launchctl bootout "gui/$(id -u)/$ANALYSIS" 2>/dev/null || true
-  rm -f "$AGENTS/$ANALYSIS.plist"
-  echo "• Rutina automática: desactivada (corre manual con 'Nuevo repaso' o /repaso-sistema)"
-else
-  [ "$SCHEDULE" = weekly ] && WEEKDAY="<key>Weekday</key><integer>1</integer>" || WEEKDAY=""
-  write_plist "$ANALYSIS" "<string>/bin/bash</string><string>$REPO/bin/analyze.sh</string>" \
-    "<key>StartCalendarInterval</key><dict>$WEEKDAY<key>Hour</key><integer>$HOUR</integer><key>Minute</key><integer>0</integer></dict>"
-  load_agent "$ANALYSIS"
-  echo "✔ Rutina automática: $SCHEDULE a las $HOUR:00 (log: $DATA/logs/$ANALYSIS.log)"
+if [ "$SCHEDULE" != keep ]; then
+  MAC_OPTIMIZER_HOME="$DATA" python3 "$REPO/app/schedule.py" "$SCHEDULE" --weekday "$WEEKDAY" --hour "$HOUR" --port "$PORT" >/dev/null
 fi
+MAC_OPTIMIZER_HOME="$DATA" python3 - "$REPO/app/schedule.py" <<'PY'
+import json, subprocess, sys
+s = json.loads(subprocess.run([sys.executable, sys.argv[1], "show"], capture_output=True, text=True).stdout)
+days = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"]
+if s["mode"] == "off":
+    print("• Rutina automática: desactivada (actívala desde el dashboard o con --schedule)")
+else:
+    when = "todos los días" if s["mode"] == "daily" else f"cada {days[s['weekday']]}"
+    print(f"✔ Rutina automática: {when} a las {s['hour']:02d}:{s['minute']:02d} · próxima: {s['next_run']}")
+PY
 
 command -v claude >/dev/null || echo "⚠ No se encontró 'claude' en el PATH: el análisis headless no va a funcionar."

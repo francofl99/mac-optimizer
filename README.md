@@ -41,7 +41,7 @@ The dashboard UI is in Spanish.
 git clone https://github.com/francofl99/mac-optimizer ~/Projects/mac-optimizer
 cd ~/Projects/mac-optimizer
 ./install.sh                      # dashboard + skill, no schedule
-./install.sh --schedule weekly    # also run a headless check every Monday at 10:00
+./install.sh --schedule weekly --weekday 0 --hour 20   # also run a headless check every Sunday at 20:00
 ./install.sh --schedule daily --hour 9
 ```
 
@@ -52,13 +52,13 @@ cd ~/Projects/mac-optimizer
 - optionally schedules the analysis (`com.mac-optimizer.analysis`),
 - creates `~/.mac-optimizer/` (mode `700`) with your config files.
 
-Run it again to change the schedule. `./uninstall.sh` removes the agents and the skill link and keeps your data.
+Re-running it (for example after `git pull`) keeps your current schedule unless you pass `--schedule`. `./uninstall.sh` removes the agents and the skill link and keeps your data.
 
 ## Usage
 
 - **In a Claude Code session:** `/repaso-sistema`.
 - **From the dashboard:** the **Nuevo repaso** button runs `analyze.sh` headless.
-- **On a schedule:** `./install.sh --schedule weekly`. You get a macOS notification when the report is ready.
+- **On a schedule:** click **Rutina** in the dashboard header to pick daily or weekly, the day and the time, or use `./install.sh --schedule …`. It runs as a LaunchAgent (`com.mac-optimizer.analysis`). If the Mac is asleep at that time, it runs on wake; if it's off, that run is skipped. You get a macOS notification when the report is ready.
 
 Several actions can run at the same time. Each job window can be minimized to the bottom bar and reopened with a click. Commands run with no stdin, so a command that asks for confirmation (`[y/N]`) is aborted and flagged with ⚠ instead of reporting success.
 

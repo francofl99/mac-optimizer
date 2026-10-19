@@ -39,7 +39,7 @@ La recolección y la ejecución son deterministas. Claude solo escribe el análi
 git clone https://github.com/francofl99/mac-optimizer ~/Projects/mac-optimizer
 cd ~/Projects/mac-optimizer
 ./install.sh                      # dashboard + skill, sin rutina
-./install.sh --schedule weekly    # además: repaso headless cada lunes a las 10:00
+./install.sh --schedule weekly --weekday 0 --hour 20   # además: repaso headless cada domingo a las 20:00
 ./install.sh --schedule daily --hour 9
 ```
 
@@ -50,13 +50,13 @@ cd ~/Projects/mac-optimizer
 - opcionalmente programa el análisis (`com.mac-optimizer.analysis`),
 - crea `~/.mac-optimizer/` (permisos `700`) con tus archivos de configuración.
 
-Se puede correr de nuevo para cambiar la frecuencia. `./uninstall.sh` quita los agentes y el link del skill, y conserva tus datos.
+Si lo vuelves a correr (por ejemplo después de un `git pull`), mantiene la rutina actual salvo que le pases `--schedule`. `./uninstall.sh` quita los agentes y el link del skill, y conserva tus datos.
 
 ## Uso
 
 - **En una sesión de Claude Code:** `/repaso-sistema`.
 - **Desde el dashboard:** el botón **Nuevo repaso** corre `analyze.sh` en modo headless.
-- **Automático:** `./install.sh --schedule weekly`. Cuando el reporte está listo llega una notificación de macOS.
+- **Automático:** toca **Rutina** en el encabezado del dashboard y elige diaria o semanal, el día y la hora, o usa `./install.sh --schedule …`. Corre como LaunchAgent (`com.mac-optimizer.analysis`). Si el Mac está dormido a esa hora, corre al despertar; si está apagado, esa ejecución se saltea. Cuando el reporte está listo llega una notificación de macOS.
 
 Las acciones se pueden correr en paralelo. La ventana de cada una se minimiza a la barra inferior y se vuelve a abrir con un clic. Los comandos corren sin stdin, así que si uno pide confirmación (`[y/N]`) se corta y queda marcado con ⚠ en lugar de OK.
 

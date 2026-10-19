@@ -13,6 +13,8 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import schedule
+
 BASE = Path(os.environ.get("MAC_OPTIMIZER_HOME", Path.home() / ".mac-optimizer"))
 REPO = Path(__file__).resolve().parent.parent
 REPORTS = BASE / "reports"
@@ -153,14 +155,6 @@ def list_reports():
     return out
 
 
-def login_path():
-    # Server may be launched without the user's shell PATH (docker, brew, go, pnpm live there).
-    out = sh(["/bin/zsh", "-ilc", "echo __P__$PATH"], timeout=10)
-    m = re.search(r"__P__(.+)", out)
-    path = m.group(1).strip() if m else os.environ.get("PATH", "")
-    return path if "/usr/bin" in path.split(":") else f"{path}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-
-
 def runnable(finding):
     cmd = (finding.get("command") or "").strip()
     if not cmd:
@@ -255,6 +249,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, list_reports())
         if path == "/api/state":
             return self.send(200, load_state())
+        if path == "/api/schedule":
+            return self.send(200, schedule.show())
         if path == "/api/jobs":
             jobs = sorted(JOBS.values(), key=lambda j: j["started"], reverse=True)[:20]
             return self.send(200, [{k: v for k, v in j.items() if k != "output"} for j in jobs])
@@ -276,6 +272,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, set_status(m.group(1), body.get("status", "pending"), body.get("note", "")))
         if self.path == "/api/run":
             return self.send(*start_job(body.get("report"), body.get("finding")))
+        if self.path == "/api/schedule":
+            try:
+                return self.send(200, schedule.apply(body.get("mode"), body.get("weekday"), body.get("hour", 10),
+                                                     body.get("minute", 0), self.server.server_port))
+            except (ValueError, TypeError, RuntimeError) as e:
+                return self.send(400, {"error": str(e)})
         if self.path == "/api/analyze":
             return self.send(*launch(None, "__analysis__", "Nuevo repaso (Claude headless)", f'bash "{REPO}/bin/analyze.sh"'))
         m = re.fullmatch(r"/api/jobs/(\w+)/cancel", self.path)
@@ -293,7 +295,7 @@ if __name__ == "__main__":
         sys.exit()
     port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8765
     REPORTS.mkdir(parents=True, exist_ok=True)
-    RUN_ENV.update(os.environ, PATH=login_path(), HOMEBREW_NO_AUTO_UPDATE="1")
+    RUN_ENV.update(os.environ, PATH=schedule.user_path(), HOMEBREW_NO_AUTO_UPDATE="1")
     Handler.token = secrets.token_urlsafe(24)
     Handler.allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
     print(f"Repaso dashboard: http://localhost:{port}", flush=True)
