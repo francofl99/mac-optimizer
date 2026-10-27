@@ -55,7 +55,7 @@ button.sec { font-size: 12px; font-weight: 600; background: var(--panel-2); bord
 #schedBtn.on { border-color: var(--ok); }
 
 .band-outer { border-bottom: 1px solid var(--border); }
-.band { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.band { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); }
 .cell { padding: 18px 20px 0; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 2px; min-width: 0; overflow: hidden; }
 .cell:last-child { border-right: 0; }
 .cell .lbl { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
@@ -135,6 +135,14 @@ button.sec { font-size: 12px; font-weight: 600; background: var(--panel-2); bord
 .drow > span:first-child { color: var(--muted); }
 .drow .tr { height: 6px; background: var(--panel-2); border-radius: 3px; overflow: hidden; display: flex; }
 .drow .num { text-align: right; font-size: 12px; white-space: nowrap; }
+.nrow { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 13px; }
+.nrow > span:first-child { color: var(--muted); }
+.nrow .lv-warn { color: var(--warn); } .nrow .lv-bad { color: var(--bad); }
+.nnote { font-size: 12px; color: var(--muted); }
+.nstatus { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
+.nstatus .badge { margin-top: 1px; }
+.speedfoot { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); margin-top: 2px; }
+.speedfoot > span { flex: 1; }
 .hrow { display: grid; grid-template-columns: 110px 1fr 70px; gap: 10px; align-items: center; font-size: 13px; }
 .hrow > span:first-child { color: var(--muted); }
 .hrow svg { width: 100%; height: 24px; display: block; }
@@ -236,6 +244,11 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
       <div class="blockers" id="blockers"></div>
     </div>
     <div class="sect">
+      <div class="sh"><b>Red</b><span id="netSub"></span></div>
+      <div class="sect" style="gap:6px" id="netRows"></div>
+      <div id="speed"></div>
+    </div>
+    <div class="sect">
       <div class="sh"><b>Docker</b><span id="dockerSub"></span></div>
       <div class="sect" id="dockerRows"></div>
     </div>
@@ -317,6 +330,29 @@ const level = (v, warn, bad) => v >= bad ? "bad" : v >= warn ? "warn" : "ok";
 const HOG_MIN_CPU = 25;
 const fmtShort = iso => iso ? new Date(iso).toLocaleString("es", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).replace(",", "") : "—";
 const fmtDay = iso => iso ? new Date(iso).toLocaleDateString("es", { day: "numeric", month: "short" }) : "—";
+const fmtBps = b => b == null ? "—" : b >= 1e9 ? `${(b / 1e9).toFixed(1)} Gb/s` : b >= 1e6 ? `${(b / 1e6).toFixed(b >= 1e8 ? 0 : 1)} Mb/s` : `${Math.round(b / 1e3)} kb/s`;
+const fmtMs = v => v == null ? "—" : `${v < 10 ? v.toFixed(1) : Math.round(v)} ms`;
+const LVL_RANK = { ok: 0, warn: 1, bad: 2 };
+const worst = (...ls) => ls.reduce((a, b) => LVL_RANK[b] > LVL_RANK[a] ? b : a, "ok");
+const pingLevel = (p, warnMs, badMs) => p?.ms == null ? "bad" : worst(level(p.ms, warnMs, badMs), level(p.loss_pct, 1, 5), level(p.jitter_ms, 30, 100));
+const NET_LABEL = { ok: "Buena", warn: "Regular", bad: "Mala" };
+
+function netHealth(n) {
+  if (!n.uplink?.port) return { lvl: "bad", label: "Sin conexión", why: "Ninguna interfaz tiene salida a la red." };
+  if (n.internet.ms == null && n.gateway?.ms != null) return { lvl: "bad", label: "Sin internet", why: "El router responde pero internet no." };
+  const issues = [];
+  const pingIssues = (p, name, to, warnMs, badMs) => p.ms == null ? issues.push(["bad", `${name} no responde`]) : issues.push(
+    [level(p.loss_pct, 1, 5), `${p.loss_pct}% de paquetes perdidos ${to}`],
+    [level(p.ms, warnMs, badMs), `latencia ${to} de ${fmtMs(p.ms)}`],
+    [level(p.jitter_ms, 30, 100), `jitter ${to} de ${fmtMs(p.jitter_ms)}`]);
+  if (n.gateway) pingIssues(n.gateway, "el router", "al router", 20, 100);
+  pingIssues(n.internet, "internet", "a internet", 100, 250);
+  issues.push(n.dns_ms == null ? ["bad", "el DNS no responde"] : [level(n.dns_ms, 100, 300), `DNS lento (${fmtMs(n.dns_ms)})`]);
+  if (n.wifi?.rssi != null) issues.push([level(-n.wifi.rssi, 67, 75), `señal Wi-Fi débil (${n.wifi.rssi} dBm)`]);
+  const lvl = worst(...issues.map(i => i[0]));
+  const why = lvl === "ok" ? "Router, internet y DNS responden bien." : issues.filter(i => i[0] === lvl).map(i => i[1]).join(", ");
+  return { lvl, label: NET_LABEL[lvl], why: why[0].toUpperCase() + why.slice(1) + (lvl === "ok" ? "" : ".") };
+}
 const toast = msg => { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1600); };
 
 function areaChart(pts, since, now, lo, hi, color) {
@@ -355,6 +391,7 @@ function renderBand() {
   const [diskV, diskU] = splitGB(disk.free_gb);
   const dv = vals("disk"), dlo = Math.min(...dv, disk.free_gb), dhi = Math.max(...dv, disk.free_gb), dpad = Math.max(.1, (dhi - dlo) * .15);
   const charging = b.source === "AC" ? (/^charging/.test(b.state || "") ? "cargando" : "cargador") : "batería";
+  const net = live.network, inet = net?.internet, nh = net && netHealth(net);
 
   $("band").innerHTML = [
     cell({ label: "Memoria", lvl: pressure == null ? null : level(pressure, 70, 85), val: pressure ?? "—", unit: "% presión",
@@ -370,6 +407,9 @@ function renderBand() {
     cell({ label: "Batería", lvl: b.max_capacity == null ? null : b.max_capacity < 80 ? "bad" : b.max_capacity < 85 ? "warn" : "ok",
       val: b.max_capacity ?? "—", unit: "% salud", sub: `${b.cycles ?? "—"} ciclos · ${b.percent ?? "—"}% carga · ${charging}`,
       chart: areaChart(series("batt"), since, now, 0, 100, "var(--ok)") }),
+    cell({ label: "Red", lvl: nh?.lvl, val: inet?.ms == null ? "—" : Math.round(inet.ms), unit: "ms",
+      sub: net ? [nh.label,`${inet.loss_pct ?? "—"}% pérdida`,`jitter ${fmtMs(inet.jitter_ms)}`, `↓ ${fmtBps(net.rx_bps)}`, net.vpn && "VPN"].filter(Boolean).join(" · ") : "midiendo…",
+      chart: areaChart(series("ping"), since, now, 0, Math.max(100, ...vals("ping")), "var(--c5)") }),
   ].join("");
 }
 
@@ -394,6 +434,54 @@ function renderProcs() {
   $("blockers").innerHTML = `Impiden el reposo: ${bl.length ? bl.map(s => `<span class="tag">${esc(s)}</span>`).join("") : "nada"}`;
 }
 
+function renderNet() {
+  const n = live?.network;
+  if (!n) { $("netSub").textContent = ""; $("netRows").innerHTML = `<div class="empty">Midiendo…</div>`; return; }
+  const up = n.uplink || {}, g = n.gateway, i = n.internet, w = n.wifi;
+  $("netSub").textContent = up.port ? `${up.port} (${up.device})${n.vpn ? ` · VPN ${n.vpn}` : ""}` : "sin conexión";
+  const pingTxt = p => p?.ms == null ? "sin respuesta" : `${fmtMs(p.ms)} · jitter ${fmtMs(p.jitter_ms)} · ${p.loss_pct}% pérdida`;
+  const gl = g && pingLevel(g, 20, 100), il = pingLevel(i, 100, 250);
+  const rows = [
+    g && ["Router", pingTxt(g), gl, `ping a ${g.host}`],
+    ["Internet", pingTxt(i), il, `ping a ${i.host}`],
+    ["DNS", fmtMs(n.dns_ms), n.dns_ms == null ? "bad" : level(n.dns_ms, 100, 300), "dig apple.com al resolver del sistema"],
+    ["Tráfico", `↓ ${fmtBps(n.rx_bps)} · ↑ ${fmtBps(n.tx_bps)}`, "ok", `contadores de ${up.device ?? "—"}`],
+    w?.rssi != null && ["Wi-Fi", `${w.rssi} dBm · SNR ${w.rssi - w.noise} dB · ${w.tx_rate_mbps ?? "—"} Mb/s`, level(-w.rssi, 67, 75), `${w.phy} · canal ${w.channel}`],
+  ].filter(Boolean);
+  const where = !g || il === "ok" ? "" : gl === "ok"
+    ? `El router responde bien: la demora está más allá${n.vpn ? ", probablemente en la VPN" : ", en el proveedor"}.`
+    : "La demora ya aparece hasta el router: revisa el Wi-Fi o el router.";
+  const h = netHealth(n);
+  $("netRows").innerHTML = `<div class="nstatus"><span class="badge b-${h.lvl}">${h.label}</span><span>${esc(h.why)}</span></div>` + rows.map(([l, v, lv, hint]) => `<div class="nrow" title="${esc(hint)}"><span>${l}</span><span class="num lv-${lv}">${v}</span></div>`).join("")
+    + (where ? `<div class="nnote">${where}</div>` : "");
+}
+
+let speed = null, speedTimer = null;
+
+function renderSpeed() {
+  const r = speed?.result, running = speed?.status === "running";
+  const val = r ? `↓ ${fmtBps(r.down_bps)} · ↑ ${fmtBps(r.up_bps)} · <span title="Idas y vueltas por minuto con la red cargada. Más es mejor.">${Math.round(r.rpm)} RPM</span>` : "sin medir";
+  const foot = running ? `<span class="spin"></span>Midiendo, tarda unos 20 s…` : speed?.status === "error" ? "✘ El test falló"
+    : r ? `${fmtShort(r.ts)} · vía ${esc(r.interface)}` : "Tarda unos 20 s y consume varios cientos de MB";
+  $("speed").innerHTML = `<div class="nrow"><span>Velocidad</span><span class="num">${val}</span></div>
+    <div class="speedfoot"><span>${foot}</span><button class="sec" id="speedBtn" ${running ? "disabled" : ""}>Test de velocidad</button></div>`;
+}
+
+async function loadSpeed() {
+  const was = speed?.status;
+  speed = await (await fetch("/api/network/speedtest")).json();
+  renderSpeed();
+  if (was === "running" && speed.status !== "running") toast(speed.status === "ok" ? "✔ Test de velocidad listo" : "✘ El test de velocidad falló");
+  clearTimeout(speedTimer);
+  if (speed.status === "running") speedTimer = setTimeout(loadSpeed, 2000);
+}
+
+async function startSpeed() {
+  const r = await post("/api/network/speedtest");
+  if (!r.ok) return toast((await r.json()).error);
+  speed = await r.json(); loadSpeed();
+}
+
 function renderMachine() {
   const mc = live?.machine || {};
   $("machine").textContent = [mc.model, mc.chip?.replace(/^Apple /, ""), live && `${Math.round(live.memory.total_gb)} GB`, mc.macos && `macOS ${mc.macos.split(".")[0]}`].filter(Boolean).join(" · ");
@@ -404,7 +492,7 @@ async function loadLive() {
     const hist = loadHistory();
     live = await (await fetch("/api/live")).json();
     await hist;
-    renderBand(); renderProcs(); renderMachine(); renderDisk();
+    renderBand(); renderProcs(); renderNet(); renderMachine(); renderDisk();
     $("liveTs").textContent = "en vivo · cada 15 s";
     $("dot").classList.remove("stale");
   } catch { $("dot").classList.add("stale"); $("liveTs").textContent = "sin conexión"; }
@@ -563,6 +651,7 @@ document.addEventListener("click", async e => {
   if (ex) return toggleExpand(ex.dataset.expand);
   const t = e.target.closest("button"); if (!t) return;
   if (t.id === "toggleResolved") { showResolved = !showResolved; renderFindings(); }
+  else if (t.id === "speedBtn") startSpeed();
   else if (t.dataset.win) { win = t.dataset.win; try { localStorage.setItem("mo.window", win); } catch {} renderWin(); loadHistory(); }
   else if (t.dataset.run) openRun(report.findings.find(f => f.id === t.dataset.run));
   else if (t.dataset.openJob) openJob(t.dataset.openJob);
@@ -752,7 +841,7 @@ $("analyze").addEventListener("click", () => openRun({ analysis: true, title: "N
   detail: "Recolecta procesos, memoria, disco, batería y Docker (~3–4 min) y Claude escribe un reporte nuevo en modo headless. No ejecuta ninguna acción de limpieza." }));
 
 renderWin();
-init().then(pollJobs); loadLive(); loadSchedule(); setInterval(loadLive, 15000);
+init().then(pollJobs); loadLive(); loadSchedule(); loadSpeed(); setInterval(loadLive, 15000);
 </script>
 </body>
 </html>
