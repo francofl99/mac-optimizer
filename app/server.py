@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """mac-optimizer dashboard. Usage: server.py [--port N] | --metrics"""
 import collections
+import ipaddress
 import json
 import os
 import re
@@ -198,15 +199,36 @@ def wifi():
     return _wifi_cache["v"]
 
 
+TRUSTED_FILE = BASE / "trusted-networks.txt"
+norm_mac = lambda m: ":".join(p.zfill(2) for p in m.lower().split(":"))
+
+
+def gateway_mac(ip):
+    m = re.search(r" at ([0-9a-f:]{11,17}) ", sh(["arp", "-n", ip], timeout=3))
+    return norm_mac(m.group(1)) if m else None
+
+
+def trusted_macs():
+    try:
+        lines = TRUSTED_FILE.read_text().splitlines()
+    except OSError:
+        return set()
+    return {norm_mac(l.split("#")[0].strip()) for l in lines if l.split("#")[0].strip()}
+
+
 def network():
     up = uplink()
     via = (re.search(r"interface: (\S+)", sh(["route", "-n", "get", "default"], timeout=3)) or [None, None])[1]
     gw = NET_POOL.submit(ping, up["gateway"]) if up else None
     inet, dns = NET_POOL.submit(ping, PING_HOST), NET_POOL.submit(dns_ms)
+    gateway = gw.result() if gw else None
+    # The router's MAC identifies the home network: the SSID is redacted without Location permission.
+    mac = gateway_mac(up["gateway"]) if up else None
     return {
         "t": time.time(), "uplink": up, "route_via": via,
         "vpn": via if via and via.startswith(VPN_IFACES) else None,
-        "gateway": gw.result() if gw else None, "internet": inet.result(), "dns_ms": dns.result(),
+        "gateway": gateway, "internet": inet.result(), "dns_ms": dns.result(),
+        "gateway_mac": mac, "trusted": bool(mac) and mac in trusted_macs(),
         "wifi": wifi() if up.get("port") == "Wi-Fi" else None,
         "bytes": iface_bytes(up["device"]) if up else None,
     }
@@ -244,6 +266,115 @@ def start_speedtest():
         SPEEDTEST["status"] = "running"
     threading.Thread(target=run_speedtest, daemon=True).start()
     return 200, SPEEDTEST
+
+
+def set_trusted(trusted):
+    up = uplink()
+    mac = gateway_mac(up["gateway"]) if up else None
+    if not mac:
+        return 409, {"error": "No se pudo identificar el router de esta red"}
+    keep = [l for l in (TRUSTED_FILE.read_text().splitlines() if TRUSTED_FILE.exists() else [])
+            if norm_mac(l.split("#")[0].strip() or "x") != mac]
+    if trusted:
+        keep.append(f"{mac}  # router {up['gateway']}, {time.strftime('%Y-%m-%d')}")
+    TRUSTED_FILE.write_text("\n".join(keep) + "\n" if keep else "")
+    if _net["v"] and _net["v"]["gateway_mac"] == mac:
+        _net["v"]["trusted"] = trusted
+    return 200, {"gateway_mac": mac, "trusted": trusted}
+
+
+SERVICE_KINDS = [("_androidtvremote2", "Android TV"), ("_googlecast", "Chromecast"), ("_airplay", "AirPlay"),
+                 ("_raop", "AirPlay"), ("_companion-link", "Apple"), ("_hap", "HomeKit"), ("_ipp", "Impresora"),
+                 ("_printer", "Impresora"), ("_scanner", "Escáner"), ("_uscan", "Escáner"),
+                 ("_spotify-connect", "Spotify Connect"), ("_smb", "Archivos compartidos"), ("_ssh", "SSH")]
+MAX_SCAN_HOSTS = 1024
+SCAN = {"status": "idle", "result": None}
+SCAN_LOCK = threading.Lock()
+
+
+def dns_unescape(s):
+    raw = re.sub(rb"\\(\d{3})", lambda m: bytes([int(m.group(1))]), s.encode())
+    return re.sub(rb"\\(.)", rb"\1", raw).decode(errors="replace").replace("\xa0", " ")
+
+
+def mdns(ip, *query):
+    # Unicast mDNS straight to the device; it answers "legacy" queries even though the port isn't 5353.
+    out = sh(["dig", "+short", "+time=1", "+tries=1", "-p", "5353", f"@{ip}", *query], timeout=4)
+    return [l for l in out.splitlines() if l and not l.startswith(";")]
+
+
+def identify(ip):
+    # Some devices answer with every record they own (A, SRV, TXT…), so keep only lines of the asked shape.
+    host = next((l for l in mdns(ip, "-x", ip) if l.endswith(".local.")), None)
+    services = mdns(ip, "_services._dns-sd._udp.local", "PTR")
+    known = [(s, label) for t, label in SERVICE_KINDS for s in services if s.startswith(t + ".")]
+    name = None
+    if known:
+        inst = next((l for l in mdns(ip, known[0][0], "PTR") if l.endswith("." + known[0][0])), None)
+        name = re.sub(r"-[0-9a-f]{32}$", "", dns_unescape(inst.removesuffix("." + known[0][0]))) if inst else None
+    if not name and host:
+        name = dns_unescape(host).removesuffix(".local.")
+    return name, list(dict.fromkeys(label for _, label in known))
+
+
+def lan(dev):
+    me = sh(["ipconfig", "getifaddr", dev]).strip()
+    return me, ipaddress.ip_interface(f"{me}/{sh(['ipconfig', 'getoption', dev, 'subnet_mask']).strip()}").network
+
+
+def run_scan(up, mac, me, net):
+    dev = up["device"]
+    with ThreadPoolExecutor(64) as pool:
+        list(pool.map(lambda h: sh(["ping", "-q", "-c", "1", "-W", "500", "-b", dev, str(h)], timeout=3),
+                      [h for h in net.hosts() if str(h) != me]))
+        found = {}
+        for ip, hw in re.findall(r"\(([\d.]+)\) at ([0-9a-f:]+) on " + dev, sh(["arp", "-an", "-i", dev])):
+            if ipaddress.ip_address(ip) in net and ip != me:
+                found[ip] = norm_mac(hw)
+        names = dict(zip(found, pool.map(identify, found)))
+    devices = [{"ip": me, "mac": None, "name": sh(["scutil", "--get", "ComputerName"]).strip() or None,
+                "kinds": [], "role": "self", "private": False}]
+    for ip, hw in found.items():
+        name, kinds = names[ip]
+        devices.append({"ip": ip, "mac": hw, "name": name, "kinds": kinds,
+                        "role": "router" if ip == up["gateway"] else None,
+                        "private": bool(int(hw[:2], 16) & 2)})
+    devices.sort(key=lambda d: ({"router": 0, "self": 1}.get(d["role"], 2), ipaddress.ip_address(d["ip"])))
+    SCAN.update(status="ok", result={"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "gateway_mac": mac,
+                                     "subnet": str(net), "devices": devices})
+
+
+def start_scan():
+    up = uplink()
+    mac = gateway_mac(up["gateway"]) if up else None
+    if not mac or mac not in trusted_macs():
+        return 403, {"error": "Esta red no está marcada como de casa: no se escanea"}
+    try:
+        me, net = lan(up["device"])
+    except ValueError:
+        return 409, {"error": "Sin dirección IPv4 en esta red"}
+    if net.num_addresses > MAX_SCAN_HOSTS:
+        return 400, {"error": "La subred es demasiado grande para escanearla"}
+    with SCAN_LOCK:
+        if SCAN["status"] == "running":
+            return 409, {"error": "La búsqueda ya está corriendo"}
+        SCAN["status"] = "running"
+
+    def job():
+        try:
+            run_scan(up, mac, me, net)
+        except (ValueError, OSError):
+            SCAN.update(status="error")
+
+    threading.Thread(target=job, daemon=True).start()
+    return 200, scan_state()
+
+
+def scan_state():
+    # Results stay in memory and only for the network they came from: device names can identify people.
+    res = SCAN["result"]
+    cur = (_net["v"] or {}).get("gateway_mac")
+    return {**SCAN, "result": res if res and res["gateway_mac"] == cur else None}
 
 
 def metrics():
@@ -432,6 +563,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, history(parse_qs(url.query).get("window", ["15m"])[0]))
         if path == "/api/network/speedtest":
             return self.send(200, SPEEDTEST)
+        if path == "/api/network/scan":
+            return self.send(200, scan_state())
         if path == "/api/reports":
             return self.send(200, list_reports())
         if path == "/api/state":
@@ -467,6 +600,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(400, {"error": str(e)})
         if self.path == "/api/network/speedtest":
             return self.send(*start_speedtest())
+        if self.path == "/api/network/trust":
+            return self.send(*set_trusted(bool(body.get("trusted"))))
+        if self.path == "/api/network/scan":
+            return self.send(*start_scan())
         if self.path == "/api/analyze":
             return self.send(*launch(None, "__analysis__", "Nuevo repaso (Claude headless)", f'bash "{REPO}/bin/analyze.sh"'))
         m = re.fullmatch(r"/api/jobs/(\w+)/cancel", self.path)

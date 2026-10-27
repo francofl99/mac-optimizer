@@ -73,6 +73,7 @@ El análisis tiene que leer tu Mac (procesos, disco, Docker), así que corre loc
 |---|---|
 | `protected-volumes.txt` | Patrones glob de volúmenes Docker que nunca se sugieren para borrar (por ejemplo, backups de DB) |
 | `branch-volumes.txt` | Patrones de copias de DB por branch o worktree. Se sugieren con riesgo medio |
+| `trusted-networks.txt` | MAC del router de las redes donde el dashboard puede buscar dispositivos conectados (se marca con el botón "Es mi red de casa") |
 | `state.json` | Hallazgos que marcaste como hechos o ignorados en el dashboard |
 | `exec.log` | Historial de comandos ejecutados desde el dashboard |
 

@@ -143,6 +143,12 @@ button.sec { font-size: 12px; font-weight: 600; background: var(--panel-2); bord
 .nstatus .badge { margin-top: 1px; }
 .speedfoot { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); margin-top: 2px; }
 .speedfoot > span { flex: 1; }
+.devlist { display: grid; gap: 4px; margin-top: 6px; }
+.dev { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; font-size: 13px; align-items: baseline; }
+.dev .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dev .nm small { color: var(--faint); font-size: 11px; margin-left: 4px; }
+.dev .nm.unknown { color: var(--muted); }
+.dev .ip { font: 12px var(--mono); color: var(--muted); }
 .hrow { display: grid; grid-template-columns: 110px 1fr 70px; gap: 10px; align-items: center; font-size: 13px; }
 .hrow > span:first-child { color: var(--muted); }
 .hrow svg { width: 100%; height: 24px; display: block; }
@@ -247,6 +253,7 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
       <div class="sh"><b>Red</b><span id="netSub"></span></div>
       <div class="sect" style="gap:6px" id="netRows"></div>
       <div id="speed"></div>
+      <div id="devices"></div>
     </div>
     <div class="sect">
       <div class="sh"><b>Docker</b><span id="dockerSub"></span></div>
@@ -482,6 +489,52 @@ async function startSpeed() {
   speed = await r.json(); loadSpeed();
 }
 
+let scan = null, scanTimer = null;
+
+function renderDevices() {
+  const n = live?.network;
+  if (!n?.gateway_mac) { $("devices").innerHTML = ""; return; }
+  if (!n.trusted) {
+    $("devices").innerHTML = `<div class="nrow"><span>Dispositivos</span><span class="num">no se buscan en esta red</span></div>
+      <div class="speedfoot"><span>Solo se escanean las redes marcadas como de casa.</span><button class="sec" id="trustBtn">Es mi red de casa</button></div>`;
+    return;
+  }
+  const r = scan?.result, running = scan?.status === "running";
+  const tag = d => ({ router: "router", self: "este Mac" }[d.role] || (d.private ? "MAC privada" : ""));
+  const label = d => d.name || d.kinds[0] || (d.role === "router" ? "Router" : "Desconocido");
+  const list = r ? `<div class="devlist">${r.devices.map(d => `<div class="dev" title="${esc(d.mac || "")}">
+      <span class="nm ${d.name ? "" : "unknown"}">${esc(label(d))}<small>${esc([...d.kinds, tag(d)].filter(t => t && t.toLowerCase() !== label(d).toLowerCase()).join(" · "))}</small></span>
+      <span class="ip">${d.ip}</span></div>`).join("")}</div>` : "";
+  const foot = running ? `<span class="spin"></span>Buscando, tarda unos 10 s…` : scan?.status === "error" ? "✘ La búsqueda falló"
+    : r ? `${fmtShort(r.ts)} · ${esc(r.subnet)} · <button class="link" id="untrustBtn">dejar de confiar en esta red</button>` : `Red de casa · <button class="link" id="untrustBtn">dejar de confiar</button>`;
+  $("devices").innerHTML = `<div class="nrow"><span>Dispositivos</span><span class="num">${r ? `${r.devices.length} en la red` : "sin buscar"}</span></div>
+    ${list}<div class="speedfoot"><span>${foot}</span><button class="sec" id="scanBtn" ${running ? "disabled" : ""}>Buscar dispositivos</button></div>`;
+}
+
+async function loadScan() {
+  const was = scan?.status;
+  scan = await (await fetch("/api/network/scan")).json();
+  renderDevices();
+  if (was === "running" && scan.status !== "running") toast(scan.status === "ok" ? `✔ ${scan.result?.devices.length ?? 0} dispositivos encontrados` : "✘ La búsqueda falló");
+  clearTimeout(scanTimer);
+  if (scan.status === "running") scanTimer = setTimeout(loadScan, 1500);
+}
+
+async function startScan() {
+  const r = await post("/api/network/scan");
+  if (!r.ok) return toast((await r.json()).error);
+  scan = await r.json(); loadScan();
+}
+
+async function setTrusted(trusted) {
+  const mac = live.network.gateway_mac;
+  if (trusted && !confirm(`¿Marcar esta red (router ${mac}) como tu red de casa?\n\nSolo se buscan dispositivos en redes marcadas así.`)) return;
+  const r = await post("/api/network/trust", { trusted });
+  if (!r.ok) return toast((await r.json()).error);
+  live.network.trusted = trusted;
+  renderDevices(); toast(trusted ? "Red marcada como de casa" : "Esta red ya no se escanea");
+}
+
 function renderMachine() {
   const mc = live?.machine || {};
   $("machine").textContent = [mc.model, mc.chip?.replace(/^Apple /, ""), live && `${Math.round(live.memory.total_gb)} GB`, mc.macos && `macOS ${mc.macos.split(".")[0]}`].filter(Boolean).join(" · ");
@@ -492,7 +545,7 @@ async function loadLive() {
     const hist = loadHistory();
     live = await (await fetch("/api/live")).json();
     await hist;
-    renderBand(); renderProcs(); renderNet(); renderMachine(); renderDisk();
+    renderBand(); renderProcs(); renderNet(); renderDevices(); renderMachine(); renderDisk();
     $("liveTs").textContent = "en vivo · cada 15 s";
     $("dot").classList.remove("stale");
   } catch { $("dot").classList.add("stale"); $("liveTs").textContent = "sin conexión"; }
@@ -652,6 +705,8 @@ document.addEventListener("click", async e => {
   const t = e.target.closest("button"); if (!t) return;
   if (t.id === "toggleResolved") { showResolved = !showResolved; renderFindings(); }
   else if (t.id === "speedBtn") startSpeed();
+  else if (t.id === "scanBtn") startScan();
+  else if (t.id === "trustBtn" || t.id === "untrustBtn") setTrusted(t.id === "trustBtn");
   else if (t.dataset.win) { win = t.dataset.win; try { localStorage.setItem("mo.window", win); } catch {} renderWin(); loadHistory(); }
   else if (t.dataset.run) openRun(report.findings.find(f => f.id === t.dataset.run));
   else if (t.dataset.openJob) openJob(t.dataset.openJob);
@@ -841,7 +896,7 @@ $("analyze").addEventListener("click", () => openRun({ analysis: true, title: "N
   detail: "Recolecta procesos, memoria, disco, batería y Docker (~3–4 min) y Claude escribe un reporte nuevo en modo headless. No ejecuta ninguna acción de limpieza." }));
 
 renderWin();
-init().then(pollJobs); loadLive(); loadSchedule(); loadSpeed(); setInterval(loadLive, 15000);
+init().then(pollJobs); loadLive(); loadSchedule(); loadSpeed(); loadScan(); setInterval(loadLive, 15000);
 </script>
 </body>
 </html>

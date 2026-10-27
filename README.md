@@ -75,6 +75,7 @@ The analysis has to read your machine (processes, disk, Docker), so it runs loca
 |---|---|
 | `protected-volumes.txt` | Glob patterns for Docker volumes that are never suggested for deletion (e.g. DB backups) |
 | `branch-volumes.txt` | Glob patterns for per-branch or worktree DB copies. These are suggested with medium risk |
+| `trusted-networks.txt` | Router MACs of the networks where the dashboard may look for connected devices (set from the dashboard's "Es mi red de casa" button) |
 | `state.json` | Findings you marked as done or ignored in the dashboard |
 | `exec.log` | History of commands run from the dashboard |
 
