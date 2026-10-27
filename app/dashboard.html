@@ -127,6 +127,8 @@ button.sec { font-size: 12px; font-weight: 600; background: var(--panel-2); bord
 .proc .num { position: relative; text-align: right; }
 .proc .cpu { font-size: 12px; color: var(--muted); }
 .proc .cpu.hot { color: var(--warn); }
+.proc .cpu.bad { color: var(--bad); }
+.proc.hog .bg { background: var(--c1); }
 .blockers { font-size: 12px; color: var(--muted); display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 4px; }
 .tag { background: var(--panel-2); border-radius: 5px; padding: 2px 7px; color: var(--text); }
 .drow { display: grid; grid-template-columns: 80px 1fr 116px; gap: 10px; align-items: center; font-size: 13px; }
@@ -225,6 +227,10 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
 
   <div class="right">
     <div class="sect">
+      <div class="sh"><b>Exigen la CPU</b><span id="hogSub"></span></div>
+      <div id="hogs"></div>
+    </div>
+    <div class="sect">
       <div class="sh"><b>Procesos</b><span id="procSub"></span></div>
       <div id="procs"></div>
       <div class="blockers" id="blockers"></div>
@@ -308,6 +314,7 @@ const fmtGB = g => g == null ? "—" : g >= 100 ? `${g.toFixed(0)} GB` : g >= 1 
 const splitGB = g => fmtGB(g).split(" ");
 const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const level = (v, warn, bad) => v >= bad ? "bad" : v >= warn ? "warn" : "ok";
+const HOG_MIN_CPU = 25;
 const fmtShort = iso => iso ? new Date(iso).toLocaleString("es", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }).replace(",", "") : "—";
 const fmtDay = iso => iso ? new Date(iso).toLocaleDateString("es", { day: "numeric", month: "short" }) : "—";
 const toast = msg => { const t = $("toast"); t.textContent = msg; t.classList.add("show"); setTimeout(() => t.classList.remove("show"), 1600); };
@@ -366,8 +373,18 @@ function renderBand() {
   ].join("");
 }
 
+function renderHogs() {
+  const hogs = live.apps.by_cpu.filter(a => a.cpu >= HOG_MIN_CPU).slice(0, 5), max = Math.max(100, ...hogs.map(a => a.cpu));
+  $("hogSub").textContent = "100% = 1 núcleo";
+  $("hogs").innerHTML = hogs.length ? hogs.map(a => `<div class="proc hog"><span class="bg" style="width:${a.cpu / max * 100}%"></span>
+    <span class="nm" title="${esc(a.name)}">${esc(a.name)} <small>×${a.procs}</small></span>
+    <span class="num">${(a.cpu / 100).toFixed(1)} núc.</span><span class="num cpu ${{ warn: "hot", bad: "bad" }[level(a.cpu, 50, 100)] || ""}">${a.cpu.toFixed(0)}%</span></div>`).join("")
+    : `<p class="empty">Ninguna app pasa del ${HOG_MIN_CPU}% de CPU.</p>`;
+}
+
 function renderProcs() {
   if (!live) return;
+  renderHogs();
   const apps = live.apps.by_ram.slice(0, 8), max = Math.max(1, ...apps.map(a => a.mb));
   $("procSub").textContent = `${live.apps.process_count} · ordenado por RAM`;
   $("procs").innerHTML = apps.map(a => `<div class="proc"><span class="bg" style="width:${a.mb / max * 100}%"></span>
