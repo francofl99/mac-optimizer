@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -136,6 +137,115 @@ def disk():
     return {"total_gb": du.total / GB, "used_gb": du.used / GB, "free_gb": du.free / GB}
 
 
+PING_HOST = "1.1.1.1"
+VPN_IFACES = ("utun", "ipsec", "ppp")
+NET_POOL = ThreadPoolExecutor(3)
+_ports = {"t": 0, "v": []}
+_wifi_cache = {"t": 0, "v": None}
+_net = {"v": None}
+
+
+def service_order():
+    if time.time() - _ports["t"] > 300:
+        out = sh(["networksetup", "-listnetworkserviceorder"])
+        _ports.update(t=time.time(), v=re.findall(r"Hardware Port: ([^,]+), Device: (\w+)\)", out))
+    return _ports["v"]
+
+
+def uplink():
+    # With a VPN the default route is a utun; the scoped route shows the physical port and router underneath.
+    for port, dev in service_order():
+        gw = re.search(r"gateway: (\S+)", sh(["route", "-n", "get", "-ifscope", dev, "default"], timeout=3))
+        if gw:
+            return {"port": port, "device": dev, "gateway": gw.group(1)}
+    return {}
+
+
+def ping(host, count=5):
+    out = sh(["ping", "-q", "-c", str(count), "-i", "0.2", "-W", "1000", host], timeout=count + 3)
+    loss = re.search(r"([\d.]+)% packet loss", out)
+    rtt = re.search(r"= [\d.]+/([\d.]+)/[\d.]+/([\d.]+) ms", out)
+    return {"host": host, "ms": round(float(rtt.group(1)), 1) if rtt else None,
+            "jitter_ms": round(float(rtt.group(2)), 1) if rtt else None,
+            "loss_pct": float(loss.group(1)) if loss else None}
+
+
+def dns_ms():
+    m = re.search(r"Query time: (\d+) msec", sh(["dig", "+tries=1", "+time=2", "apple.com"], timeout=4))
+    return int(m.group(1)) if m else None
+
+
+def iface_bytes(dev):
+    for line in sh(["netstat", "-ibn", "-I", dev]).splitlines():
+        if "<Link#" in line:
+            cols = line.split()
+            return int(cols[-5]), int(cols[-2])
+    return None
+
+
+def wifi():
+    if time.time() - _wifi_cache["t"] > 60:
+        cur = sh(["system_profiler", "SPAirPortDataType"], timeout=30).partition("Current Network Information:")[2]
+        cur = cur.partition("Other Local Wi-Fi Networks:")[0]
+        field = lambda k: (re.search(rf"{k}: (.+)", cur) or [None, None])[1]
+        sn = re.search(r"Signal / Noise: (-?\d+) dBm / (-?\d+) dBm", cur)
+        rate = field("Transmit Rate")
+        _wifi_cache.update(t=time.time(), v={
+            "rssi": int(sn.group(1)) if sn else None, "noise": int(sn.group(2)) if sn else None,
+            "channel": field("Channel"), "phy": field("PHY Mode"),
+            "tx_rate_mbps": int(rate) if rate and rate.isdigit() else None,
+        } if cur else None)
+    return _wifi_cache["v"]
+
+
+def network():
+    up = uplink()
+    via = (re.search(r"interface: (\S+)", sh(["route", "-n", "get", "default"], timeout=3)) or [None, None])[1]
+    gw = NET_POOL.submit(ping, up["gateway"]) if up else None
+    inet, dns = NET_POOL.submit(ping, PING_HOST), NET_POOL.submit(dns_ms)
+    return {
+        "t": time.time(), "uplink": up, "route_via": via,
+        "vpn": via if via and via.startswith(VPN_IFACES) else None,
+        "gateway": gw.result() if gw else None, "internet": inet.result(), "dns_ms": dns.result(),
+        "wifi": wifi() if up.get("port") == "Wi-Fi" else None,
+        "bytes": iface_bytes(up["device"]) if up else None,
+    }
+
+
+def throughput(prev, cur):
+    if not (prev and prev["bytes"] and cur["bytes"]) or prev["uplink"] != cur["uplink"]:
+        return None, None
+    dt = cur["t"] - prev["t"]
+    return tuple(round(max(0, c - p) * 8 / dt) for p, c in zip(prev["bytes"], cur["bytes"]))
+
+
+SPEEDTEST = {"status": "idle", "result": None}
+SPEEDTEST_LOCK = threading.Lock()
+SPEEDTEST_FILE = BASE / "speedtest.json"
+
+
+def run_speedtest():
+    try:
+        r = json.loads(sh(["networkQuality", "-c"], timeout=120))
+        result = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "down_bps": r.get("dl_throughput"),
+                  "up_bps": r.get("ul_throughput"), "rpm": r.get("responsiveness"),
+                  "base_rtt_ms": r.get("base_rtt"), "interface": r.get("interface_name"),
+                  "server": r.get("test_endpoint")}
+        SPEEDTEST_FILE.write_text(json.dumps(result))
+        SPEEDTEST.update(status="ok", result=result)
+    except (ValueError, OSError):
+        SPEEDTEST.update(status="error")
+
+
+def start_speedtest():
+    with SPEEDTEST_LOCK:
+        if SPEEDTEST["status"] == "running":
+            return 409, {"error": "El test ya está corriendo"}
+        SPEEDTEST["status"] = "running"
+    threading.Thread(target=run_speedtest, daemon=True).start()
+    return 200, SPEEDTEST
+
+
 def metrics():
     load = os.getloadavg()
     return {
@@ -148,6 +258,7 @@ def metrics():
         "battery": battery(),
         "apps": top_apps(),
         "docker": docker(),
+        "network": _net["v"],
     }
 
 
@@ -159,6 +270,9 @@ MAX_POINTS = 240
 
 def sample():
     m = memory()
+    net = network()
+    net["rx_bps"], net["tx_bps"] = throughput(_net["v"], net)
+    _net["v"] = net
     return {
         "t": int(time.time()),
         "mem": 100 - m["free_pct"] if m["free_pct"] is not None else None,
@@ -166,16 +280,21 @@ def sample():
         "swap": round(m["swap_used_gb"], 3),
         "disk": round(disk()["free_gb"], 2),
         "batt": battery_now()["percent"],
+        "ping": net["internet"]["ms"],
+        "gw": (net["gateway"] or {}).get("ms"),
+        "rx": net["rx_bps"],
+        "tx": net["tx_bps"],
     }
 
 
 def sampler():
     while True:
+        start = time.time()
         try:
             HISTORY.append(sample())
         except Exception:
             pass
-        time.sleep(SAMPLE_EVERY)
+        time.sleep(max(1, SAMPLE_EVERY - (time.time() - start)))
 
 
 def boot_time():
@@ -311,6 +430,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, metrics())
         if path == "/api/live/history":
             return self.send(200, history(parse_qs(url.query).get("window", ["15m"])[0]))
+        if path == "/api/network/speedtest":
+            return self.send(200, SPEEDTEST)
         if path == "/api/reports":
             return self.send(200, list_reports())
         if path == "/api/state":
@@ -344,6 +465,8 @@ class Handler(BaseHTTPRequestHandler):
                                                      body.get("minute", 0), self.server.server_port))
             except (ValueError, TypeError, RuntimeError) as e:
                 return self.send(400, {"error": str(e)})
+        if self.path == "/api/network/speedtest":
+            return self.send(*start_speedtest())
         if self.path == "/api/analyze":
             return self.send(*launch(None, "__analysis__", "Nuevo repaso (Claude headless)", f'bash "{REPO}/bin/analyze.sh"'))
         m = re.fullmatch(r"/api/jobs/(\w+)/cancel", self.path)
@@ -357,10 +480,15 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     if "--metrics" in sys.argv:
+        _net["v"] = network()
         print(json.dumps(metrics(), indent=2))
         sys.exit()
     port = int(sys.argv[sys.argv.index("--port") + 1]) if "--port" in sys.argv else 8765
     REPORTS.mkdir(parents=True, exist_ok=True)
+    try:
+        SPEEDTEST.update(status="ok", result=json.loads(SPEEDTEST_FILE.read_text()))
+    except (OSError, ValueError):
+        pass
     RUN_ENV.update(os.environ, PATH=schedule.user_path(), HOMEBREW_NO_AUTO_UPDATE="1")
     Handler.token = secrets.token_urlsafe(24)
     Handler.allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
