@@ -77,15 +77,15 @@ code { font: 12px var(--mono); }
 .cell .unit { font-size: 14px; color: var(--muted); white-space: nowrap; }
 .cell .sub { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cell svg { width: calc(100% + 40px); margin: 10px -20px 0; height: 56px; display: block; }
-.cell.area { padding-bottom: 14px; cursor: pointer; text-align: left; font: inherit; color: inherit; background: transparent; border-width: 0 1px 0 0; border-radius: 0; }
-.cell.area:hover { background: var(--panel); border-color: var(--border); }
-.cell.area[aria-selected="true"] { background: var(--panel); box-shadow: inset 0 -2px 0 var(--accent); }
+.cell.area { padding-bottom: 14px; }
 
 .body { display: grid; grid-template-columns: minmax(0, 1fr) 420px; }
+.body.wide { grid-template-columns: minmax(0, 1fr) 580px; }
 .left { padding: 18px 24px 80px; border-right: 1px solid var(--border); min-width: 0; }
-.right { padding: 16px 24px 80px; min-width: 0; }
+.right { padding: 12px 24px 80px; min-width: 0; }
 .pane { display: flex; flex-direction: column; gap: 14px; }
-.right .pane { gap: 18px; }
+.right .pane { gap: 12px; }
+.mod { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; gap: 6px; }
 .summary { display: flex; gap: 14px; align-items: flex-start; }
 .summary .badge { margin-top: 2px; }
 .summary p { margin: 0; flex: 1; font-size: 14px; color: var(--muted); text-wrap: pretty; }
@@ -133,14 +133,12 @@ code { font: 12px var(--mono); }
 .sect .sh b { font-size: 14px; font-weight: 650; }
 .sect .sh span { font-size: 12px; color: var(--muted); }
 .rows { display: flex; flex-direction: column; gap: 5px; }
-.disk { gap: 10px; padding-top: 4px; }
-.disk .sh { justify-content: flex-start; }
-.stack { display: flex; height: 22px; border-radius: 6px; overflow: hidden; gap: 2px; background: var(--panel-2); }
+.stack { display: flex; height: 18px; border-radius: 6px; overflow: hidden; gap: 2px; background: var(--panel-2); }
 .stack span { display: block; height: 100%; min-width: 2px; }
-.dlegend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 20px; }
-.dlegend div { display: flex; align-items: center; gap: 8px; font-size: 12px; min-width: 0; }
+.dlegend { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 14px; }
+.dlegend div { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
 .dlegend i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
-.dlegend em { font-style: normal; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.dlegend em { font-style: normal; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
 
 .proc { display: grid; grid-template-columns: minmax(0, 1fr) 58px 44px; gap: 10px; align-items: center; font-size: 13px; position: relative; padding: 3px 0; }
 .proc .bg { position: absolute; left: 0; top: 0; bottom: 0; background: var(--c2); opacity: .14; border-radius: 3px; }
@@ -169,6 +167,9 @@ code { font: 12px var(--mono); }
 .dev .nm small { color: var(--faint); font-size: 11px; margin-left: 4px; }
 .dev .nm.unknown { color: var(--muted); }
 .dev .ip { font: 12px var(--mono); color: var(--muted); }
+.hist { gap: 10px; padding-top: 4px; }
+.hist .sh { justify-content: flex-start; }
+.sparks { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 28px; }
 .hrow { display: grid; grid-template-columns: 110px 1fr 70px; gap: 10px; align-items: center; font-size: 13px; }
 .hrow > span:first-child { color: var(--muted); }
 .hrow svg { width: 100%; height: 24px; display: block; }
@@ -178,12 +179,15 @@ details.changes summary { cursor: pointer; color: var(--faint); }
 details.changes summary:hover { color: var(--text); }
 details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4px; }
 
-.chk { display: grid; grid-template-columns: 8px minmax(0, 1fr) minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 13px; padding: 6px 0; border-bottom: 1px solid var(--panel-2); }
-.chk i { width: 7px; height: 7px; border-radius: 50%; align-self: center; }
+.amod { padding: 12px 14px; gap: 4px; }
+.amod .sh { margin-bottom: 2px; }
+.chk { display: grid; grid-template-columns: 8px 200px minmax(0, 1fr); gap: 10px; align-items: baseline; font-size: 12.5px; padding: 5px 0; border-top: 1px solid var(--panel-2); }
+.chk i { width: 7px; height: 7px; border-radius: 50%; align-self: start; margin-top: 6px; }
+.sect .sh span.lv-warn { color: var(--warn); } .sect .sh span.lv-bad { color: var(--bad); }
 .chk > span:nth-child(2) { color: var(--muted); overflow-wrap: anywhere; }
 .chk > span:nth-child(3) { overflow-wrap: anywhere; }
 .chk .fix { display: block; font-size: 12px; color: var(--muted); margin-top: 2px; }
-.chk-group { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); padding-top: 10px; }
+.chk-group { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); padding: 10px 0 4px; }
 .anote { font-size: 12px; color: var(--faint); margin-top: 4px; text-wrap: pretty; }
 
 .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; z-index: 20; padding: 16px; }
@@ -227,7 +231,7 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
 @media (max-width: 900px) {
   .band { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
   .cell { border-bottom: 1px solid var(--border); }
-  .dlegend { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dlegend, .sparks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 @media (max-width: 640px) {
   .top, .left, .right { padding-left: 16px; padding-right: 16px; }
@@ -237,6 +241,8 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
   .trow .ar, .trow .rk, .trow.head { display: none; }
   .trow .acts { grid-column: 1 / -1; justify-content: flex-start; }
   .xp { padding-left: 14px; }
+  .sparks { grid-template-columns: minmax(0, 1fr); }
+  .chk { grid-template-columns: 8px minmax(0, 1fr) minmax(0, 1fr); }
 }
 </style>
 </head>
@@ -259,7 +265,7 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
 
 <section class="band" id="band"></section>
 
-<div class="body">
+<div class="body" id="body">
   <div class="left">
     <div class="pane" data-only="perf">
       <div class="summary" id="summary"><p class="empty">Todavía no hay repasos. Toca <b>Nuevo repaso</b> o pídele a Claude <code>/repaso-sistema</code>.</p></div>
@@ -271,10 +277,10 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
         <button id="analyze" class="primary" title="Recolectar datos y que Claude genere un repaso nuevo">Nuevo repaso</button>
       </div>
       <div class="table" id="findings"></div>
-      <div class="sect disk">
-        <div class="sh"><b>Disco</b><span id="diskSub"></span></div>
-        <div class="stack" id="diskStack"></div>
-        <div class="dlegend" id="diskLegend"></div>
+      <div class="sect hist">
+        <div class="sh"><b>Entre repasos</b><span id="histSub"></span></div>
+        <div class="sparks" id="history"></div>
+        <div id="changes"></div>
       </div>
     </div>
     <div class="pane" data-only="sec">
@@ -292,30 +298,28 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
 
   <div class="right">
     <div class="pane" data-only="perf">
-      <div class="sect">
+      <div class="sect mod">
         <div class="sh"><b>Procesos</b><span id="procSub"></span></div>
         <div class="rows" id="procs"></div>
         <div class="blockers" id="blockers"></div>
       </div>
-      <div class="sect">
+      <div class="sect mod">
         <div class="sh"><b>Red</b><span id="netSub"></span></div>
         <div class="rows" id="netRows"></div>
         <div class="rows" id="speed"></div>
         <div class="rows" id="devices"></div>
       </div>
-      <div class="sect">
+      <div class="sect mod">
         <div class="sh"><b>Docker</b><span id="dockerSub"></span></div>
         <div class="rows" id="dockerRows"></div>
       </div>
-      <div class="sect">
-        <div class="sh"><b>Entre repasos</b><span id="histSub"></span></div>
-        <div class="sect" id="history"></div>
-        <div id="changes"></div>
+      <div class="sect mod">
+        <div class="sh"><b>Disco</b><span id="diskSub"></span></div>
+        <div class="stack" id="diskStack"></div>
+        <div class="dlegend" id="diskLegend"></div>
       </div>
     </div>
-    <div class="pane" data-only="sec">
-      <div class="sect" id="secArea"></div>
-    </div>
+    <div class="pane" data-only="sec" id="secAreas"></div>
   </div>
 </div>
 </div>
@@ -380,8 +384,8 @@ const dismissed = new Set();
 let runningSig = "";
 let state = { findings: {} }, report = null, reports = [], showResolved = false;
 const expanded = new Set();
-let live = null, liveOk = null, liveHistory = null, win = "15m", sched = null, tab = "perf", secArea = "sis";
-try { win = localStorage.getItem("mo.window") || win; tab = localStorage.getItem("mo.tab") || tab; secArea = localStorage.getItem("mo.area") || secArea; } catch {}
+let live = null, liveOk = null, liveHistory = null, win = "15m", sched = null, tab = "perf";
+try { win = localStorage.getItem("mo.window") || win; tab = localStorage.getItem("mo.tab") || tab; } catch {}
 
 const fmtGB = g => g == null ? "—" : g >= 100 ? `${g.toFixed(0)} GB` : g >= 1 ? `${g.toFixed(1)} GB` : `${(g * 1024).toFixed(0)} MB`;
 const splitGB = g => fmtGB(g).split(" ");
@@ -421,6 +425,7 @@ const copy = async cmd => { await navigator.clipboard.writeText(cmd); toast("Com
 function renderTab() {
   document.querySelectorAll("[data-tab]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === tab)));
   document.querySelectorAll("[data-only]").forEach(el => el.hidden = el.dataset.only !== tab);
+  $("body").classList.toggle("wide", tab === "sec");
   renderLiveTs();
   if (tab === "perf") renderBand(); else renderSecurity();
 }
@@ -767,19 +772,19 @@ function secAreaData(id) {
 function renderSecBand(areas) {
   $("band").innerHTML = areas.map(([id, a]) => {
     const fl = flagged(a.lvl) ? `<span class="flag ${a.lvl}">${SEC_LABEL[a.lvl]}</span>` : "";
-    return `<button class="cell area" role="tab" data-area="${id}" aria-selected="${id === secArea}"><div class="lbl">${a.name}${fl}</div>
+    return `<div class="cell area"><div class="lbl">${a.name}${fl}</div>
       <div class="valrow"><span class="val ${flagged(a.lvl) ? a.lvl : ""}">${esc(a.val)}</span><span class="unit">${esc(a.unit)}</span></div>
-      <div class="sub" title="${esc(a.sub)}">${esc(a.sub)}</div></button>`;
+      <div class="sub" title="${esc(a.sub)}">${esc(a.sub)}</div></div>`;
   }).join("");
 }
 
-function renderSecArea(a) {
+function secModule(id, a) {
   const fixHtml = s => esc(s).replace(/`([^`]+)`/g, "<code>$1</code>");
-  $("secArea").innerHTML = `<div class="sh"><b>${a.name}</b><span>${esc(a.meta || "")}</span></div>
+  return `<div class="sect mod amod" id="area-${id}"><div class="sh"><b>${a.name}</b><span class="${flagged(a.lvl) ? `lv-${a.lvl}` : ""}">${esc(a.meta || "")}</span></div>
     <div>${a.rows.length ? a.rows.map(r => r.group ? `<div class="chk-group">${esc(r.group)}</div>` : `<div class="chk"><i style="background:${dotColor(r.lvl)}"></i><span>${esc(r.name)}</span>
       <span class="${flagged(r.lvl) ? `lv-${r.lvl}` : ""}">${esc(r.value)}${r.fix ? `<span class="fix">${fixHtml(r.fix)}</span>` : ""}</span></div>`).join("")
       : `<div class="empty">${security?.status === "error" ? "No se pudo revisar" : "Revisando…"}</div>`}</div>
-    ${a.foot || ""}${a.note ? `<div class="anote">${esc(a.note)}</div>` : ""}`;
+    ${a.foot || ""}${a.note ? `<div class="anote">${esc(a.note)}</div>` : ""}</div>`;
 }
 
 function secRow(a) {
@@ -813,7 +818,7 @@ function renderSecurity() {
 
   const areas = SEC_AREAS.map(([id]) => [id, secAreaData(id)]);
   renderSecBand(areas);
-  renderSecArea(areas.find(([id]) => id === secArea)?.[1] ?? areas[0][1]);
+  $("secAreas").innerHTML = areas.map(([id, a]) => secModule(id, a)).join("");
   const parts = [counts.bad && plural(counts.bad, "riesgo", "riesgos"), counts.warn && plural(counts.warn, "punto a revisar", "puntos a revisar"),
     counts.info && plural(counts.info, "sugerencia", "sugerencias")].filter(Boolean);
   $("secTitle").textContent = security?.result ? plural(acts.length, "acción de seguridad", "acciones de seguridad") : "Acciones de seguridad";
@@ -878,9 +883,8 @@ function onSecAction(a) {
   if (a.kind === "copy") return copy(a.cmd);
   if (a.kind === "scan") return startMalware();
   if (a.kind === "launch") return disableLaunch(a);
-  secArea = a.areaId;
-  try { localStorage.setItem("mo.area", secArea); } catch {}
   toggleExpand(`s:${a.key}`);
+  $(`area-${a.areaId}`)?.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
 function renderMachine() {
@@ -977,7 +981,7 @@ function renderDisk() {
   const items = (report?.disk_breakdown || []).slice().sort((a, b) => b.gb - a.gb);
   if (!items.length) { $("diskSub").textContent = ""; $("diskStack").innerHTML = ""; $("diskLegend").innerHTML = `<span class="empty">Sin desglose de disco en este repaso.</span>`; return; }
   const used = live?.disk.used_gb ?? items.reduce((s, x) => s + x.gb, 0);
-  $("diskSub").textContent = live ? `${fmtGB(live.disk.used_gb)} usados de ${fmtGB(live.disk.total_gb)} · desglose del repaso` : "desglose del repaso";
+  $("diskSub").textContent = live ? `${splitGB(live.disk.used_gb)[0]} de ${fmtGB(live.disk.total_gb)} usados` : "desglose del repaso";
   const color = x => KIND_COLORS[x.kind] || "var(--c6)";
   $("diskStack").innerHTML = items.map(x => `<span title="${esc(x.label)} · ${fmtGB(x.gb)}" style="width:${Math.min(100, x.gb / used * 100)}%;background:${color(x)}"></span>`).join("");
   $("diskLegend").innerHTML = items.map(x => `<div><i style="background:${color(x)}"></i><em title="${esc(x.label)}">${esc(x.label)}</em><span class="num">${fmtGB(x.gb)}</span></div>`).join("");
@@ -1066,8 +1070,6 @@ document.addEventListener("keydown", e => {
 document.addEventListener("click", async e => {
   const ex = e.target.closest("[data-expand]");
   if (ex) return toggleExpand(ex.dataset.expand);
-  const area = e.target.closest("[data-area]");
-  if (area) { secArea = area.dataset.area; try { localStorage.setItem("mo.area", secArea); } catch {} return renderSecurity(); }
   const t = e.target.closest("button"); if (!t) return;
   if (t.dataset.tab) setTab(t.dataset.tab);
   else if (t.id === "toggleResolved") { showResolved = !showResolved; renderFindings(); }
