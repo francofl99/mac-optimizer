@@ -29,6 +29,7 @@ REPO = Path(__file__).resolve().parent.parent
 REPORTS = BASE / "reports"
 STATE = BASE / "state.json"
 DASHBOARD = Path(__file__).with_name("dashboard.html")
+ICON = Path(__file__).with_name("icon.png")
 EXEC_LOG = BASE / "exec.log"
 GB = 1024 ** 3
 
@@ -1159,9 +1160,9 @@ def refresh_security():
         SECURITY.update(status="error", t=time.time())
 
 
-def security_state():
+def security_state(force=False):
     with SECURITY_LOCK:
-        if SECURITY["status"] != "running" and time.time() - SECURITY["t"] > SECURITY_EVERY:
+        if SECURITY["status"] != "running" and (force or time.time() - SECURITY["t"] > SECURITY_EVERY):
             SECURITY["status"] = "running"
             threading.Thread(target=refresh_security, daemon=True).start()
     return {k: SECURITY[k] for k in ("status", "result")}
@@ -1414,6 +1415,8 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             html = DASHBOARD.read_text().replace("__CSRF_TOKEN__", self.token)
             return self.send(200, html.encode(), "text/html; charset=utf-8")
+        if path == "/icon.png":
+            return self.send(200, ICON.read_bytes(), "image/png")
         if path == "/api/live":
             return self.send(200, metrics())
         if path == "/api/live/history":
@@ -1467,6 +1470,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(*set_trusted(bool(body.get("trusted"))))
         if self.path == "/api/network/scan":
             return self.send(*start_scan())
+        if self.path == "/api/security":
+            return self.send(200, security_state(force=True))
         if self.path == "/api/security/scan":
             return self.send(*start_malware_scan())
         if self.path == "/api/security/launch":

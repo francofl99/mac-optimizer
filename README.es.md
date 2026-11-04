@@ -90,7 +90,7 @@ Variables de entorno:
 
 ## Chequeos de seguridad
 
-La sección de seguridad del dashboard (`GET /api/security`, se actualiza cada 10 minutos) revisa, sin `sudo`:
+La sección de seguridad del dashboard (`GET /api/security`, se actualiza cada 10 minutos, o en el momento con `POST /api/security` desde el botón "Revisar ahora") revisa, sin `sudo`:
 
 - FileVault, SIP, Gatekeeper, la versión de XProtect y su antigüedad.
 - El firewall en detalle: cada opción contra su valor recomendado (modo invisible, permitir automáticamente software descargado firmado, software integrado, bloquear todo en una red que no está marcada como de casa) y cada regla por app con qué es y si conviene dejarla, bloquearla o quitarla (intérpretes como `python3`, reglas de servicios compartidos que están apagados, programas que ya no existen). Los arreglos son comandos de `socketfilterfw` que corres con `sudo`.

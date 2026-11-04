@@ -92,7 +92,7 @@ Environment variables:
 
 ## Security checks
 
-The dashboard's security section (`GET /api/security`, refreshed every 10 minutes) checks, without `sudo`:
+The dashboard's security section (`GET /api/security`, refreshed every 10 minutes, or right away with `POST /api/security` from the "Revisar ahora" button) checks, without `sudo`:
 
 - FileVault, SIP, Gatekeeper, the XProtect version and how old it is.
 - The firewall in detail: each option against its recommended value (stealth mode, automatically allowing downloaded signed software, built-in software, blocking everything on a network not marked as home), and each per-app rule with what it is and whether to keep, block or remove it (interpreters like `python3`, rules for sharing services that are off, programs that no longer exist). The fixes are `socketfilterfw` commands you run with `sudo`.
