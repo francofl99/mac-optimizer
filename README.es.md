@@ -77,6 +77,7 @@ El análisis tiene que leer tu Mac (procesos, disco, Docker), así que corre loc
 | `trusted-networks.txt` | MAC del router de las redes donde el dashboard puede buscar dispositivos conectados (se marca con el botón "Es mi red de casa") |
 | `launch-baseline.json` | LaunchAgents y LaunchDaemons ya vistos, para marcar los nuevos durante una semana |
 | `malware-scan.json` | Resultado del último escaneo de malware |
+| `token` | El token de la sesión actual, que solo tú puedes leer, para que [personal-console](https://github.com/francofl99/personal-console) pueda prender o apagar elementos de arranque |
 | `outbound-baseline.json` | Procesos que ya salieron a internet y desde cuándo, para marcar los nuevos |
 | `state.json` | Hallazgos que marcaste como hechos o ignorados en el dashboard |
 | `exec.log` | Historial de comandos ejecutados desde el dashboard |
@@ -96,7 +97,7 @@ La sección de seguridad del dashboard (`GET /api/security`, se actualiza cada 1
 - Actualizaciones automáticas (respuestas de seguridad, macOS, App Store) y actualizaciones pendientes.
 - Demora del bloqueo de pantalla, inicio de sesión automático, cuenta de invitado y servicios compartidos (SSH, pantalla, archivos).
 - Puertos que escuchan en todas las interfaces en lugar de solo en localhost, agrupados por proceso, y si el firewall deja pasar cada uno y por qué.
-- LaunchAgents y LaunchDaemons: quién firmó cada programa, firmas ausentes o inválidas, scripts, plists cuyo programa ya no existe y lo agregado en la última semana.
+- LaunchAgents y LaunchDaemons: quién firmó cada programa, firmas ausentes o inválidas, scripts, plists cuyo programa ya no existe, lo agregado en la última semana y si cada uno está deshabilitado en launchd.
 - Copias de seguridad: si Time Machine tiene un destino y cuándo fue la última.
 - Entorno de desarrollo:
   - Claves SSH de `~/.ssh` y de los `IdentityFile` de `~/.ssh/config`: sin passphrase, con permisos abiertos o guardadas dentro de un repo git. Solo lee la cabecera de cada clave.
@@ -123,6 +124,7 @@ El escaneo de malware (`/api/security/scan`) corre YARA con las reglas de XProte
 - Ejecutar un comando requiere un token que se regenera en cada arranque y solo está embebido en el dashboard. Otras páginas abiertas en el navegador no pueden disparar comandos.
 - El comando siempre sale del reporte guardado en disco, nunca del navegador.
 - Los comandos con `sudo` nunca se ejecutan desde el dashboard.
+- `POST /api/security/launch` prende o apaga un LaunchAgent (`launchctl enable`/`disable` más `bootstrap`/`bootout`). Solo acepta plists del último chequeo de seguridad, nunca LaunchDaemons del sistema ni el agente del propio dashboard.
 - Las acciones de riesgo medio o alto piden escribir `EJECUTAR` para confirmar.
 - Docker: nunca se usa `volume prune`. Los volúmenes se borran desde listas explícitas, y `docker volume rm` rechaza cualquiera que esté en uso.
 

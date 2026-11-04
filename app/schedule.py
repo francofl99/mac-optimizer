@@ -89,6 +89,8 @@ def apply(mode, weekday=None, hour=10, minute=0, port=None):
         "StandardOutPath": str(LOG),
         "StandardErrorPath": str(LOG),
     }))
+    # Turned off from the security page means disabled in launchd, and bootstrap refuses a disabled label.
+    subprocess.run(["launchctl", "enable", f"{DOMAIN}/{LABEL}"], capture_output=True)
     res = subprocess.run(["launchctl", "bootstrap", DOMAIN, str(PLIST)], capture_output=True, text=True)
     if res.returncode != 0:
         raise RuntimeError(f"launchctl bootstrap falló: {res.stderr.strip()}")

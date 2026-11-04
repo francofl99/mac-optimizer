@@ -42,6 +42,8 @@ USER_PATH="${USER_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin
 load_agent() {
   local label="$1" plist="$AGENTS/$1.plist"
   launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+  # bootstrap refuses a label that was disabled before (launchctl disable, or turned off in Login Items).
+  launchctl enable "gui/$(id -u)/$label"
   launchctl bootstrap "gui/$(id -u)" "$plist"
 }
 
