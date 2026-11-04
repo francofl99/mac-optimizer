@@ -22,7 +22,7 @@ state.json / exec.log ◄──────────────────�
 | `bin/docker_volumes.py` | Classifies Docker images, build cache and volumes by risk. It inspects each volume's contents and protects anything that looks like a database | No |
 | `skill/SKILL.md` | Analysis criteria and the report schema | Yes |
 | `bin/analyze.sh` | `collect.sh` + headless `claude -p`. Claude can only read files and write to `reports/` | Yes |
-| `app/server.py` + `app/dashboard.html` | Dashboard on `localhost:8765`: live metrics, findings, Run button, concurrent jobs, history | No |
+| `app/server.py` + `app/dashboard.html` | Dashboard on `localhost:8765`: live metrics, findings, Run button, concurrent jobs, history, security checks | No |
 
 Data collection and command execution are deterministic. Claude only writes the analysis, and in headless mode it cannot run commands.
 
@@ -31,6 +31,7 @@ Data collection and command execution are deterministic. Claude only writes the 
 - macOS (tested on Apple Silicon, macOS 26).
 - The system Python 3 (no dependencies).
 - [Claude Code](https://claude.com/claude-code) installed and logged in, for the analysis.
+- Optional: [YARA](https://virustotal.github.io/yara/) (`brew install yara`) for the malware scan.
 - Optional: Docker. [OrbStack](https://orbstack.dev) gives the best results. With Docker Desktop, volume inspection needs a local `alpine` or `busybox` image; without one, unreadable volumes are classified as protected.
 
 The dashboard UI is in Spanish.
@@ -76,6 +77,9 @@ The analysis has to read your machine (processes, disk, Docker), so it runs loca
 | `protected-volumes.txt` | Glob patterns for Docker volumes that are never suggested for deletion (e.g. DB backups) |
 | `branch-volumes.txt` | Glob patterns for per-branch or worktree DB copies. These are suggested with medium risk |
 | `trusted-networks.txt` | Router MACs of the networks where the dashboard may look for connected devices (set from the dashboard's "Es mi red de casa" button) |
+| `launch-baseline.json` | LaunchAgents and LaunchDaemons already seen, so new ones are flagged for a week |
+| `malware-scan.json` | Result of the last malware scan |
+| `outbound-baseline.json` | Processes already seen connecting to the internet and since when, so new ones are flagged |
 | `state.json` | Findings you marked as done or ignored in the dashboard |
 | `exec.log` | History of commands run from the dashboard |
 
@@ -84,6 +88,31 @@ Environment variables:
 - `MAC_OPTIMIZER_HOME`: data directory.
 - `MAC_OPTIMIZER_PROJECT_DIRS`: where to look for stale `node_modules`. Default: `~/Projects ~/Desktop ~/code`.
 - `MAC_OPTIMIZER_MODEL`: model for headless analysis.
+
+## Security checks
+
+The dashboard's security section (`GET /api/security`, refreshed every 10 minutes) checks, without `sudo`:
+
+- FileVault, SIP, Gatekeeper, the XProtect version and how old it is.
+- The firewall in detail: each option against its recommended value (stealth mode, automatically allowing downloaded signed software, built-in software, blocking everything on a network not marked as home), and each per-app rule with what it is and whether to keep, block or remove it (interpreters like `python3`, rules for sharing services that are off, programs that no longer exist). The fixes are `socketfilterfw` commands you run with `sudo`.
+- Automatic updates (security responses, macOS, App Store) and pending updates.
+- Screen lock delay, automatic login, the guest account and sharing services (SSH, screen, files).
+- Ports listening on every interface instead of only on localhost, grouped by process, and whether the firewall lets each one through and why.
+- LaunchAgents and LaunchDaemons: who signed each program, unsigned or invalid signatures, scripts, plists whose program no longer exists, and items added in the last week.
+- Backups: whether Time Machine has a destination and when the last backup ran.
+- Development environment:
+  - SSH keys in `~/.ssh` and the `IdentityFile` entries of `~/.ssh/config`: no passphrase, open permissions, or stored inside a git repo. Only each key's header is read.
+  - Plain-text credentials: static AWS keys, npm and pnpm tokens, `.netrc`, Docker logins without the keychain, the `gh` token, `.git-credentials` and `.pypirc`. Values are never shown.
+  - npm and pnpm: the wait before installing new versions (`min-release-age`, `minimumReleaseAge`), `trustPolicy` and install scripts.
+  - Unsupported node and python versions (nvm, Homebrew, pyenv, the nodejs.org installer), with dates from [endoflife.date](https://endoflife.date) fetched once a day.
+  - Docker container ports published on every interface, and whether OrbStack keeps them on localhost only.
+- Suspicious processes: running from temp or download folders, `curl`, `osascript` and the like launched by node or python, unsigned binaries with internet connections, and executables no longer on disk.
+
+Outbound connections (`GET /api/security/connections`) are sampled from `netstat` every 30 seconds and grouped by app over 24 hours: how many destinations each has, each IP's reverse name and who signed the app. The first day it learns which processes reach the internet; after that, new ones are flagged for a week. Connections shorter than 30 seconds can slip through: blocking them as they happen needs an outbound firewall such as [LuLu](https://objective-see.org/products/lulu.html).
+
+It only reports. Each check comes with the fix, which you apply yourself.
+
+The malware scan (`/api/security/scan`) runs YARA with Apple's own XProtect rules over Downloads, Desktop, Applications, `/Users/Shared`, the temp folders and the launch items' programs. It runs on its own every 24 hours while on the charger, or from the dashboard's "Escanear" button. Files over 200 MB are skipped, and folders macOS protects (Desktop, Downloads) need the terminal or Python running the server to have access to them.
 
 ## Privacy
 
