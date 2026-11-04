@@ -1,6 +1,6 @@
 # mac-optimizer
 
-[English](README.md)
+[English](README.md) · **Español**
 
 Repaso periódico del Mac (RAM, swap, CPU, batería, disco, Docker y arranque) con un dashboard local. [Claude Code](https://claude.com/claude-code) analiza los datos y propone acciones. Tú revisas cada una y la ejecutas desde un botón, con confirmación.
 
@@ -51,6 +51,19 @@ cd ~/Projects/mac-optimizer
 - opcionalmente programa el análisis (`com.mac-optimizer.analysis`),
 - crea `~/.mac-optimizer/` (permisos `700`) con tus archivos de configuración.
 
+### Solo seguridad, en dos minutos
+
+Los chequeos de seguridad no necesitan Claude Code:
+
+```bash
+git clone https://github.com/francofl99/mac-optimizer ~/Projects/mac-optimizer
+cd ~/Projects/mac-optimizer && ./install.sh
+brew install yara   # opcional, habilita el escaneo de malware
+open http://localhost:8765
+```
+
+Abre la pestaña **Seguridad**, toca **Revisar ahora** y resuelve lo que aparezca en rojo y amarillo. Para el escaneo de malware, dale Acceso total al disco a Terminal (o al Python que corre el servidor) en Ajustes del Sistema › Privacidad y seguridad, y toca **Escanear**.
+
 Si lo vuelves a correr (por ejemplo después de un `git pull`), mantiene la rutina actual salvo que le pases `--schedule`. `./uninstall.sh` quita los agentes y el link del skill, y conserva tus datos.
 
 ## Uso
@@ -77,7 +90,7 @@ El análisis tiene que leer tu Mac (procesos, disco, Docker), así que corre loc
 | `trusted-networks.txt` | MAC del router de las redes donde el dashboard puede buscar dispositivos conectados (se marca con el botón "Es mi red de casa") |
 | `launch-baseline.json` | LaunchAgents y LaunchDaemons ya vistos, para marcar los nuevos durante una semana |
 | `malware-scan.json` | Resultado del último escaneo de malware |
-| `token` | El token de la sesión actual, que solo tú puedes leer, para que [personal-console](https://github.com/francofl99/personal-console) pueda prender o apagar elementos de arranque |
+| `token` | El token de la sesión actual, que solo tú puedes leer, para que otras herramientas locales puedan prender o apagar elementos de arranque desde la API |
 | `outbound-baseline.json` | Procesos que ya salieron a internet y desde cuándo, para marcar los nuevos |
 | `state.json` | Hallazgos que marcaste como hechos o ignorados en el dashboard |
 | `exec.log` | Historial de comandos ejecutados desde el dashboard |
@@ -128,7 +141,7 @@ El escaneo de malware (`/api/security/scan`) corre YARA con las reglas de XProte
 - Las acciones de riesgo medio o alto piden escribir `EJECUTAR` para confirmar.
 - Docker: nunca se usa `volume prune`. Los volúmenes se borran desde listas explícitas, y `docker volume rm` rechaza cualquiera que esté en uso.
 
-¿Encontraste una vulnerabilidad? Repórtala en privado desde [GitHub security advisories](https://github.com/francofl99/mac-optimizer/security/advisories/new), no en un issue público.
+¿Encontraste una vulnerabilidad? Mira [SECURITY.es.md](SECURITY.es.md) y repórtala en privado, no en un issue público.
 
 ## Problemas comunes
 
