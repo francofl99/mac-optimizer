@@ -1,6 +1,6 @@
 # mac-optimizer
 
-[Español](README.es.md)
+**English** · [Español](README.es.md)
 
 A periodic health check for your Mac (RAM, swap, CPU, battery, disk, Docker and login items) with a local dashboard. [Claude Code](https://claude.com/claude-code) analyzes the data and suggests actions. You review each one and run it with a button, after confirming.
 
@@ -53,6 +53,19 @@ cd ~/Projects/mac-optimizer
 - optionally schedules the analysis (`com.mac-optimizer.analysis`),
 - creates `~/.mac-optimizer/` (mode `700`) with your config files.
 
+### Security only, in two minutes
+
+You don't need Claude Code for the security checks:
+
+```bash
+git clone https://github.com/francofl99/mac-optimizer ~/Projects/mac-optimizer
+cd ~/Projects/mac-optimizer && ./install.sh
+brew install yara   # optional, enables the malware scan
+open http://localhost:8765
+```
+
+Open the **Seguridad** tab, press **Revisar ahora** and work through the red and yellow items. For the malware scan, give Terminal (or the Python running the server) Full Disk Access in System Settings › Privacy & Security, then press **Escanear**.
+
 Re-running it (for example after `git pull`) keeps your current schedule unless you pass `--schedule`. `./uninstall.sh` removes the agents and the skill link and keeps your data.
 
 ## Usage
@@ -79,7 +92,7 @@ The analysis has to read your machine (processes, disk, Docker), so it runs loca
 | `trusted-networks.txt` | Router MACs of the networks where the dashboard may look for connected devices (set from the dashboard's "Es mi red de casa" button) |
 | `launch-baseline.json` | LaunchAgents and LaunchDaemons already seen, so new ones are flagged for a week |
 | `malware-scan.json` | Result of the last malware scan |
-| `token` | The current session token, readable only by you, so [personal-console](https://github.com/francofl99/personal-console) can switch launch items |
+| `token` | The current session token, readable only by you, so other local tools can switch launch items through the API |
 | `outbound-baseline.json` | Processes already seen connecting to the internet and since when, so new ones are flagged |
 | `state.json` | Findings you marked as done or ignored in the dashboard |
 | `exec.log` | History of commands run from the dashboard |
@@ -130,7 +143,7 @@ The malware scan (`/api/security/scan`) runs YARA with Apple's own XProtect rule
 - Medium and high risk actions require typing `EJECUTAR` to confirm.
 - Docker: the tool never uses `volume prune`. Volumes are deleted from explicit lists, and `docker volume rm` refuses any volume that is in use.
 
-Found a vulnerability? Please report it privately through [GitHub security advisories](https://github.com/francofl99/mac-optimizer/security/advisories/new) rather than opening a public issue.
+Found a vulnerability? See [SECURITY.md](SECURITY.md) and report it privately, not in a public issue.
 
 ## Troubleshooting
 
