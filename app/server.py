@@ -392,6 +392,10 @@ LAUNCH_DIRS = [(Path.home() / "Library/LaunchAgents", "Tu usuario"), (Path("/Lib
 INTERPRETERS = {"sh", "bash", "zsh", "python", "python3", "node", "osascript", "perl", "ruby", "env"}
 BASELINE_FILE = BASE / "launch-baseline.json"
 NEW_FOR = 7 * 86400
+UID = os.getuid()
+# Turning off the dashboard's own agent would stop this server mid-request.
+LAUNCH_PROTECTED = {"com.mac-optimizer.dashboard"}
+TOKEN_FILE = BASE / "token"
 SECURITY_EVERY = 600
 UPDATES_EVERY = 6 * 3600
 SECURITY = {"status": "idle", "result": None, "t": 0}
@@ -654,7 +658,16 @@ def signature(path):
     return {"signed": True, "valid": valid, "signer": who}
 
 
+def launch_overrides():
+    found = {}
+    for domain in (f"gui/{UID}", "system"):
+        for label, state in re.findall(r'"([^"]+)" => (enabled|disabled)', sh(["launchctl", "print-disabled", domain], timeout=5)):
+            found[(domain, label)] = state == "disabled"
+    return found
+
+
 def launch_items():
+    overrides = launch_overrides()
     try:
         baseline = json.loads(BASELINE_FILE.read_text())
     except (OSError, ValueError):
@@ -673,7 +686,11 @@ def launch_items():
             seen = baseline.get(str(plist))
             if not seen or seen.get("program") != prog:
                 seen = baseline[str(plist)] = {"first_seen": 0 if first else now, "program": prog}
-            item = {"path": str(plist), "label": (pl or {}).get("Label") or plist.stem, "scope": scope, "program": prog,
+            label = (pl or {}).get("Label") or plist.stem
+            domain = "system" if folder.name == "LaunchDaemons" else f"gui/{UID}"
+            item = {"path": str(plist), "label": label, "scope": scope, "program": prog, "domain": domain,
+                    "disabled": overrides.get((domain, label), bool((pl or {}).get("Disabled"))),
+                    "toggle": domain != "system" and label not in LAUNCH_PROTECTED,
                     "new": now - seen["first_seen"] < NEW_FOR, "first_seen": seen["first_seen"] or None}
             if pl is None:
                 item.update(level="warn", note="no se pudo leer el plist")
@@ -694,6 +711,23 @@ def launch_items():
             items.append(item)
     BASELINE_FILE.write_text(json.dumps(baseline, indent=1))
     return items
+
+
+def set_launch(path, enabled):
+    item = next((i for i in (SECURITY["result"] or {}).get("launch", []) if i["path"] == path), None)
+    if not item or not item["toggle"]:
+        return 400, {"error": "Ese elemento no se puede cambiar desde aquí"}
+    target = f"{item['domain']}/{item['label']}"
+    res = subprocess.run(["launchctl", "enable" if enabled else "disable", target], capture_output=True, text=True, timeout=10)
+    if res.returncode:
+        return 500, {"error": res.stderr.strip() or "launchctl falló"}
+    # Errors are expected here (not loaded, already loaded); the enable/disable above is what lasts across logins.
+    if not enabled:
+        subprocess.run(["launchctl", "bootout", target], capture_output=True, timeout=10)
+    elif item["program"] and Path(item["program"]).exists():
+        subprocess.run(["launchctl", "bootstrap", item["domain"], path], capture_output=True, timeout=10)
+    item["disabled"] = not enabled
+    return 200, item
 
 
 HOME = Path.home()
@@ -1435,6 +1469,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(*start_scan())
         if self.path == "/api/security/scan":
             return self.send(*start_malware_scan())
+        if self.path == "/api/security/launch":
+            return self.send(*set_launch(body.get("path"), bool(body.get("enabled"))))
         if self.path == "/api/analyze":
             return self.send(*launch(None, "__analysis__", "Nuevo repaso (Claude headless)", f'bash "{REPO}/bin/analyze.sh"'))
         m = re.fullmatch(r"/api/jobs/(\w+)/cancel", self.path)
@@ -1463,6 +1499,9 @@ if __name__ == "__main__":
         pass
     RUN_ENV.update(os.environ, PATH=schedule.user_path(), HOMEBREW_NO_AUTO_UPDATE="1")
     Handler.token = secrets.token_urlsafe(24)
+    # personal-console reads it to toggle launch items; BASE is 700, so only this user can.
+    with os.fdopen(os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+        f.write(Handler.token)
     Handler.allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
     threading.Thread(target=sampler, daemon=True).start()
     threading.Thread(target=malware_scheduler, daemon=True).start()

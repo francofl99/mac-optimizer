@@ -79,6 +79,7 @@ The analysis has to read your machine (processes, disk, Docker), so it runs loca
 | `trusted-networks.txt` | Router MACs of the networks where the dashboard may look for connected devices (set from the dashboard's "Es mi red de casa" button) |
 | `launch-baseline.json` | LaunchAgents and LaunchDaemons already seen, so new ones are flagged for a week |
 | `malware-scan.json` | Result of the last malware scan |
+| `token` | The current session token, readable only by you, so [personal-console](https://github.com/francofl99/personal-console) can switch launch items |
 | `outbound-baseline.json` | Processes already seen connecting to the internet and since when, so new ones are flagged |
 | `state.json` | Findings you marked as done or ignored in the dashboard |
 | `exec.log` | History of commands run from the dashboard |
@@ -98,7 +99,7 @@ The dashboard's security section (`GET /api/security`, refreshed every 10 minute
 - Automatic updates (security responses, macOS, App Store) and pending updates.
 - Screen lock delay, automatic login, the guest account and sharing services (SSH, screen, files).
 - Ports listening on every interface instead of only on localhost, grouped by process, and whether the firewall lets each one through and why.
-- LaunchAgents and LaunchDaemons: who signed each program, unsigned or invalid signatures, scripts, plists whose program no longer exists, and items added in the last week.
+- LaunchAgents and LaunchDaemons: who signed each program, unsigned or invalid signatures, scripts, plists whose program no longer exists, items added in the last week, and whether each one is disabled in launchd.
 - Backups: whether Time Machine has a destination and when the last backup ran.
 - Development environment:
   - SSH keys in `~/.ssh` and the `IdentityFile` entries of `~/.ssh/config`: no passphrase, open permissions, or stored inside a git repo. Only each key's header is read.
@@ -125,6 +126,7 @@ The malware scan (`/api/security/scan`) runs YARA with Apple's own XProtect rule
 - Running a command requires a token that is regenerated every time the server starts and is embedded only in the dashboard page. Other sites open in your browser can't trigger commands.
 - The command always comes from the report file on disk, never from the browser request.
 - Commands that use `sudo` are never run from the dashboard.
+- `POST /api/security/launch` turns a LaunchAgent on or off (`launchctl enable`/`disable` plus `bootstrap`/`bootout`). It only accepts plists from the last security check, never system LaunchDaemons and never the dashboard's own agent.
 - Medium and high risk actions require typing `EJECUTAR` to confirm.
 - Docker: the tool never uses `volume prune`. Volumes are deleted from explicit lists, and `docker volume rm` refuses any volume that is in use.
 
