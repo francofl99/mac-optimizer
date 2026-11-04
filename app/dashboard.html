@@ -144,6 +144,8 @@ button.sec { font-size: 12px; font-weight: 600; background: var(--panel-2); bord
 .speedfoot { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); margin-top: 2px; }
 .speedfoot > span { flex: 1; }
 .devlist { display: grid; gap: 4px; margin-top: 6px; }
+.nrow.wide { grid-template-columns: 130px minmax(0, 1fr); }
+.nrow .fix { display: block; font-size: 12px; color: var(--muted); white-space: normal; }
 .dev { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; font-size: 13px; align-items: baseline; }
 .dev .nm { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .dev .nm small { color: var(--faint); font-size: 11px; margin-left: 4px; }
@@ -254,6 +256,11 @@ details.changes ul { margin: 8px 0 0; padding-left: 18px; display: grid; gap: 4p
       <div class="sect" style="gap:6px" id="netRows"></div>
       <div id="speed"></div>
       <div id="devices"></div>
+    </div>
+    <div class="sect">
+      <div class="sh"><b>Seguridad</b><span id="secSub"></span></div>
+      <div class="sect" style="gap:6px" id="secRows"></div>
+      <div id="malware"></div>
     </div>
     <div class="sect">
       <div class="sh"><b>Docker</b><span id="dockerSub"></span></div>
@@ -535,6 +542,54 @@ async function setTrusted(trusted) {
   renderDevices(); toast(trusted ? "Red marcada como de casa" : "Esta red ya no se escanea");
 }
 
+let security = null, malware = null, secTimer = null, malwareTimer = null;
+const SEC_LABEL = { ok: "Bien", warn: "Revisar", bad: "Riesgo" };
+
+function renderSecurity() {
+  const r = security?.result;
+  if (!r) { $("secSub").textContent = ""; $("secRows").innerHTML = `<div class="empty">${security?.status === "error" ? "No se pudo revisar" : "Revisando…"}</div>`; return; }
+  const all = [...r.checks, ...(r.dev ?? [])], flagged = i => i.level === "warn" || i.level === "bad";
+  const issues = all.filter(flagged).sort((a, b) => (b.level === "bad") - (a.level === "bad")), lvl = issues.some(c => c.level === "bad") ? "bad" : issues.length ? "warn" : "ok";
+  const launch = r.launch.filter(flagged), susp = (r.suspicious ?? []).filter(flagged);
+  $("secSub").textContent = `${all.length - issues.length} de ${all.length} en orden`;
+  $("secRows").innerHTML = `<div class="nstatus"><span class="badge b-${lvl}">${SEC_LABEL[lvl]}</span><span>${issues.length ? `${issues.length} ${issues.length === 1 ? "punto" : "puntos"} a revisar.` : "Todo en orden."}</span></div>`
+    + issues.map(c => `<div class="nrow wide"><span>${esc(c.label)}</span><span class="lv-${c.level}">${esc(c.value)}<span class="fix">${esc(c.fix)}</span></span></div>`).join("")
+    + (launch.length ? `<div class="nrow wide"><span>Arranque</span><span class="lv-warn">${launch.map(i => `${esc(i.label)} (${esc(i.note)})`).join(", ")}</span></div>` : "")
+    + (susp.length ? `<div class="nrow wide"><span>Procesos</span><span class="lv-warn">${susp.map(s => `${esc(s.name)} (${esc(s.note)})`).join(", ")}</span></div>` : "");
+}
+
+function renderMalware() {
+  const m = malware, r = m?.result, running = m?.status === "running";
+  const val = !m?.yara ? "falta yara" : r ? (r.matches.length ? `${r.matches.length} ${r.matches.length === 1 ? "coincidencia" : "coincidencias"}` : "sin coincidencias") : "sin escanear";
+  const foot = running ? `<span class="spin"></span>Escaneando con las reglas de XProtect, tarda unos minutos…` : m?.status === "error" ? "✘ El escaneo falló"
+    : !m?.yara ? "Instálalo con <code>brew install yara</code>" : r ? `${fmtShort(r.ts)} · ${r.duration} s · ${r.unreadable} sin acceso` : `Corre solo cada ${m.every_h} h con el cargador puesto`;
+  $("malware").innerHTML = `<div class="nrow"><span>Malware</span><span class="num ${r?.matches.length ? "lv-bad" : ""}">${val}</span></div>
+    ${r?.matches.length ? `<div class="devlist">${r.matches.map(x => `<div class="dev"><span class="nm" title="${esc(x.path)}">${esc(x.path)}</span><span class="ip">${esc(x.rule)}</span></div>`).join("")}</div>` : ""}
+    <div class="speedfoot"><span>${foot}</span><button class="sec" id="malwareBtn" ${running || !m?.yara ? "disabled" : ""}>Escanear</button></div>`;
+}
+
+async function loadSecurity() {
+  security = await (await fetch("/api/security")).json();
+  renderSecurity();
+  clearTimeout(secTimer);
+  secTimer = setTimeout(loadSecurity, security.status === "running" ? 3000 : 60000);
+}
+
+async function loadMalware() {
+  const was = malware?.status;
+  malware = await (await fetch("/api/security/scan")).json();
+  renderMalware();
+  if (was === "running" && malware.status !== "running") toast(malware.status === "ok" ? `✔ Escaneo listo: ${malware.result.matches.length} coincidencias` : "✘ El escaneo falló");
+  clearTimeout(malwareTimer);
+  if (malware.status === "running") malwareTimer = setTimeout(loadMalware, 5000);
+}
+
+async function startMalware() {
+  const r = await post("/api/security/scan");
+  if (!r.ok) return toast((await r.json()).error);
+  malware = await r.json(); loadMalware();
+}
+
 function renderMachine() {
   const mc = live?.machine || {};
   $("machine").textContent = [mc.model, mc.chip?.replace(/^Apple /, ""), live && `${Math.round(live.memory.total_gb)} GB`, mc.macos && `macOS ${mc.macos.split(".")[0]}`].filter(Boolean).join(" · ");
@@ -706,6 +761,7 @@ document.addEventListener("click", async e => {
   if (t.id === "toggleResolved") { showResolved = !showResolved; renderFindings(); }
   else if (t.id === "speedBtn") startSpeed();
   else if (t.id === "scanBtn") startScan();
+  else if (t.id === "malwareBtn") startMalware();
   else if (t.id === "trustBtn" || t.id === "untrustBtn") setTrusted(t.id === "trustBtn");
   else if (t.dataset.win) { win = t.dataset.win; try { localStorage.setItem("mo.window", win); } catch {} renderWin(); loadHistory(); }
   else if (t.dataset.run) openRun(report.findings.find(f => f.id === t.dataset.run));
@@ -896,7 +952,7 @@ $("analyze").addEventListener("click", () => openRun({ analysis: true, title: "N
   detail: "Recolecta procesos, memoria, disco, batería y Docker (~3–4 min) y Claude escribe un reporte nuevo en modo headless. No ejecuta ninguna acción de limpieza." }));
 
 renderWin();
-init().then(pollJobs); loadLive(); loadSchedule(); loadSpeed(); loadScan(); setInterval(loadLive, 15000);
+init().then(pollJobs); loadLive(); loadSchedule(); loadSpeed(); loadScan(); loadSecurity(); loadMalware(); setInterval(loadLive, 15000);
 </script>
 </body>
 </html>

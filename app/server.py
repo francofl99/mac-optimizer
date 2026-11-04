@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 """mac-optimizer dashboard. Usage: server.py [--port N] | --metrics"""
+import base64
 import collections
+import configparser
 import ipaddress
 import json
 import os
+import plistlib
 import re
 import secrets
 import signal
+import socket
 import threading
 import shutil
 import subprocess
 import sys
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -28,9 +33,10 @@ EXEC_LOG = BASE / "exec.log"
 GB = 1024 ** 3
 
 
-def sh(cmd, timeout=15):
+def sh(cmd, timeout=15, merge=False):
     try:
-        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+        return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT if merge else subprocess.PIPE,
+                              text=True, timeout=timeout).stdout
     except Exception:
         return ""
 
@@ -377,6 +383,823 @@ def scan_state():
     return {**SCAN, "result": res if res and res["gateway_mac"] == cur else None}
 
 
+FIREWALL = "/usr/libexec/ApplicationFirewall/socketfilterfw"
+XPROTECT_RULES = Path("/Library/Apple/System/Library/CoreServices/XProtect.bundle/Contents/Resources/XProtect.yara")
+SHARING_PORTS = {22: "SSH", 445: "archivos (SMB)", 548: "archivos (AFP)", 3283: "gestión remota", 5900: "pantalla"}
+LOOPBACK = ("127.", "::1", "fe80::1%lo0", "localhost")
+LAUNCH_DIRS = [(Path.home() / "Library/LaunchAgents", "Tu usuario"), (Path("/Library/LaunchAgents"), "Todos los usuarios"),
+               (Path("/Library/LaunchDaemons"), "Sistema (root)")]
+INTERPRETERS = {"sh", "bash", "zsh", "python", "python3", "node", "osascript", "perl", "ruby", "env"}
+BASELINE_FILE = BASE / "launch-baseline.json"
+NEW_FOR = 7 * 86400
+SECURITY_EVERY = 600
+UPDATES_EVERY = 6 * 3600
+SECURITY = {"status": "idle", "result": None, "t": 0}
+SECURITY_LOCK = threading.Lock()
+_updates = {"t": 0, "v": None}
+
+
+def check(cid, label, lvl, value, fix=None):
+    return {"id": cid, "label": label, "level": lvl, "value": value, "fix": fix if lvl != "ok" else None}
+
+
+def pref(domain, key):
+    return sh(["defaults", "read", domain, key]).strip() or None
+
+
+def listeners():
+    found = set()
+    for line in sh(["netstat", "-anv", "-p", "tcp"]).splitlines():
+        # Columns after the state: rxbytes txbytes rhiwat shiwat process:pid. Names may contain spaces.
+        m = re.match(r"tcp\S*\s+\d+\s+\d+\s+(\S+)\.(\d+)\s+\S+\s+LISTEN\s+(?:\d+\s+){4}(.+?):(\d+)\s", line)
+        if m:
+            found.add((m.group(1), int(m.group(2)), m.group(3), int(m.group(4))))
+    return found
+
+
+FW_CMD = "sudo /usr/libexec/ApplicationFirewall/socketfilterfw"
+FW_INTERPRETERS = {"python", "python3", "ruby", "node", "perl", "php", "java", "bun", "deno"}
+# Apple services that show up as firewall rules: what they are, the port that shows they are on, and a note.
+FW_KNOWN = {
+    "sshd-keygen-wrapper": ("Inicio de sesión remoto (SSH)", 22, None),
+    "smbd": ("Compartir archivos (SMB)", 445, None),
+    "cupsd": ("Compartir impresoras", 631, None),
+    "screensharingd": ("Compartir pantalla", 5900, None),
+    "sharingd": ("AirDrop y Handoff", None, "Necesaria para AirDrop."),
+    "remoted": ("Depuración de iPhone o iPad por red (Xcode)", None, "Solo hace falta si depuras en un dispositivo por Wi-Fi."),
+    "remotepairingdeviced": ("Emparejamiento de iPhone o iPad (Xcode)", None, "Solo hace falta si depuras en un dispositivo por Wi-Fi."),
+}
+
+
+def exe_path(pid):
+    # Some processes rename themselves (node shows "next-server"), so ps alone can lose the path.
+    comm = sh(["ps", "-o", "comm=", "-p", str(pid)]).strip()
+    if comm.startswith("/"):
+        return comm
+    txt = re.search(r"^n(/.+)$", sh(["lsof", "-nP", "-a", "-p", str(pid), "-d", "txt", "-Fn"]), re.M)
+    return txt.group(1) if txt else None
+
+
+def fw_rules():
+    out = sh([FIREWALL, "--listapps"])
+    return [(path.strip(), "block" not in rule.lower()) for path, rule in re.findall(r"^\d+ : (.+?)\s*\n\s*\((.+?)\)", out, re.M)]
+
+
+def fw_app(path, allowed, ports, sign):
+    base = re.sub(r"\.(app|systemextension)$", "", Path(path).name)
+    app = {"path": path, "name": base, "allowed": allowed, "what": None, "fix": None}
+    if not allowed:
+        return {**app, "level": "ok", "advice": "Bloqueada."}
+    remove, block = f"`{FW_CMD} --remove {path}`", f"`{FW_CMD} --blockapp {path}`"
+    if base in FW_INTERPRETERS:
+        return {**app, "what": f"Intérprete de {base}", "level": "warn", "fix": block,
+                "advice": f"Cualquier script de {base} puede recibir conexiones de la red. Bloquéala salvo que sirvas algo a otros "
+                          "equipos: lo que escucha solo en localhost no la necesita."}
+    if base in FW_KNOWN:
+        what, port, note = FW_KNOWN[base]
+        if port and port not in ports:
+            return {**app, "what": what, "level": "warn", "fix": remove, "advice": "El servicio está apagado: la regla sobra."}
+        return {**app, "what": what, "level": "info" if note and note.startswith("Solo") else "ok", "fix": remove if note else None,
+                "advice": note or "La usa un servicio que está activo."}
+    if "tailscale" in path.lower():
+        return {**app, "what": "Tailscale", "level": "ok", "advice": "Necesaria para recibir conexiones por Tailscale."}
+    if not Path(path).exists():
+        return {**app, "level": "warn", "fix": remove, "advice": "El programa ya no existe: la regla sobra."}
+    sig = sign(path)
+    if not sig["signed"] or not sig["valid"]:
+        return {**app, "level": "warn", "fix": block, "advice": "Sin firma válida: confirma que la reconoces antes de dejarla pasar."}
+    return {**app, "level": "info", "advice": f"Firmada por {sig['signer'] or 'su desarrollador'}. Déjala solo si otros equipos se conectan a ella."}
+
+
+def fw_option(oid, label, on, recommended, why, arg, level=None):
+    lvl = level or ("ok" if on == recommended else "warn")
+    return {"id": oid, "label": label, "on": on, "recommended": recommended, "level": lvl, "why": why,
+            "fix": f"Ajustes › Red › Firewall › Opciones, o en tu terminal: `{FW_CMD} {arg}`" if lvl != "ok" else None}
+
+
+def firewall(open_ports, ports):
+    enabled = "enabled" in sh([FIREWALL, "--getglobalstate"])
+    stealth = sh([FIREWALL, "--getstealthmode"]).strip().endswith(" on")
+    block_all = "enabled" in sh([FIREWALL, "--getblockall"])
+    signed_out = sh([FIREWALL, "--getallowsigned"])
+    builtin = bool(re.search(r"built-in signed software ENABLED", signed_out))
+    downloaded = bool(re.search(r"downloaded signed software ENABLED", signed_out))
+    net = _net["v"] or {}
+    # With no network marked as home there is nothing to compare against, so block-all gets no advice.
+    trusted = net.get("trusted") if net.get("gateway_mac") and trusted_macs() else None
+    sigs = {}
+    sign = lambda path: sigs.setdefault(path, signature(path))
+
+    options = [
+        fw_option("stealth", "Modo invisible", stealth, True,
+                  "El Mac no responde a pings ni a sondeos de puertos: cuesta más encontrarlo en una red ajena.",
+                  "--setstealthmode on"),
+        fw_option("allow_signed", "Permitir software descargado firmado", downloaded, False,
+                  "Activado, cualquier app descargada con firma válida recibe conexiones sin preguntarte. "
+                  "Apagado, macOS pregunta la primera vez y la regla queda en la lista.", "--setallowsignedapp off"),
+        fw_option("allow_builtin", "Permitir software integrado", builtin, True,
+                  "AirDrop, AirPlay y los servicios de compartir de Apple funcionan sin reglas a mano.", "--setallowsigned on"),
+        fw_option("block_all", "Bloquear todas las conexiones entrantes", block_all, trusted is False,
+                  ("Estás en una red que no marcaste como de casa: actívalo mientras sigas en ella. " if trusted is False else
+                   "En tu red de casa no hace falta. " if trusted else "") +
+                  "Corta todo lo entrante salvo DHCP e IPsec, incluidos AirDrop y compartir.",
+                  "--setblockall on" if trusted is False else "--setblockall off",
+                  level="info" if block_all and trusted is not False else None),
+    ]
+    rules = fw_rules()
+    apps = sorted((fw_app(path, ok, ports, sign) for path, ok in rules), key=lambda a: (LEVELS[a["level"]], a["name"]))
+
+    def reach(path):
+        if not enabled:
+            return True, "sin firewall"
+        if block_all:
+            return False, "bloquear todo"
+        rule = next((ok for p, ok in rules if path == p or path.startswith(p.rstrip("/") + "/")), None)
+        if rule is not None:
+            return rule, "regla: permitir" if rule else "regla: bloquear"
+        sig = sign(path) if path else {"signed": False}
+        if sig.get("signer") == "Apple" and builtin:
+            return True, "software de Apple"
+        if sig.get("signed") and sig.get("valid") and not sig.get("adhoc") and downloaded:
+            return True, "firma de desarrollador"
+        return False, "sin regla: bloqueado hasta que lo permitas"
+
+    exposed = {}
+    for _, port, proc, pid in open_ports:
+        e = exposed.setdefault(proc, {"process": proc, "ports": set(), "pids": set()})
+        e["ports"].add(port)
+        e["pids"].add(pid)
+    for e in exposed.values():
+        e["path"] = exe_path(min(e.pop("pids")))
+        e["reachable"], e["why"] = reach(e["path"])
+        e["ports"] = sorted(e["ports"])
+    exposed = sorted(exposed.values(), key=lambda e: (not e["reachable"], -len(e["ports"])))
+    return {"enabled": enabled, "stealth": stealth, "trusted_network": trusted, "options": options, "apps": apps}, exposed
+
+
+def pending_updates():
+    if time.time() - _updates["t"] > UPDATES_EVERY:
+        out = sh(["softwareupdate", "--list"], timeout=120, merge=True)
+        titles = re.findall(r"Title: (.+?), Version: ([^,]+)", out)
+        _updates.update(t=time.time(), v=[f"{t} {v}" for t, v in titles] if "Finding available" in out else None)
+    return _updates["v"]
+
+
+def xprotect_info():
+    m = re.search(r"Version: (\S+) Installed: (\S+ \S+)", sh(["xprotect", "version"]))
+    if m:
+        installed = time.mktime(time.strptime(m.group(2), "%Y-%m-%d %H:%M:%S"))
+        return m.group(1), installed, "disabled" not in sh(["xprotect", "status"])
+    try:
+        return None, XPROTECT_RULES.stat().st_mtime, True
+    except OSError:
+        return None, None, False
+
+
+def posture(open_ports, all_ports):
+    checks = []
+    fv = sh(["fdesetup", "status"])
+    checks.append(check("filevault", "FileVault", "ok" if "is On" in fv else "warn" if "progress" in fv else "bad",
+                        "disco cifrado" if "is On" in fv else "cifrando…" if "progress" in fv else "disco sin cifrar",
+                        "Actívalo en Ajustes › Privacidad y seguridad › FileVault."))
+    sip = "enabled" in sh(["csrutil", "status"])
+    checks.append(check("sip", "Protección del sistema (SIP)", "ok" if sip else "bad", "activa" if sip else "desactivada",
+                        "Reactívala desde el modo de recuperación con `csrutil enable`."))
+    gk = "enabled" in sh(["spctl", "--status"])
+    checks.append(check("gatekeeper", "Gatekeeper", "ok" if gk else "bad",
+                        "solo apps firmadas" if gk else "acepta apps sin verificar", "En tu terminal: `sudo spctl --global-enable`."))
+
+    fw, exposed = firewall(open_ports, {port for _, port, _, _ in all_ports})
+    bad_opts = [o for o in fw["options"] if o["level"] == "warn"]
+    bad_apps = [a for a in fw["apps"] if a["level"] == "warn"]
+    todo = [("Activa" if o["recommended"] else "Desactiva") + f" «{o['label']}»" for o in bad_opts]
+    if bad_apps:
+        todo.append("bloquea o quita las reglas de " + ", ".join(a["name"] for a in bad_apps))
+    issues = len(bad_opts) + len(bad_apps)
+    checks.append(check("firewall", "Firewall", ("warn" if issues else "ok") if fw["enabled"] else "bad" if open_ports else "warn",
+                        (f"activo · {issues} {'punto' if issues == 1 else 'puntos'} a revisar" if issues else "activo") if fw["enabled"] else "apagado",
+                        "; ".join(todo).capitalize() + "." if fw["enabled"] else
+                        "Actívalo en Ajustes › Red › Firewall; con servicios abiertos a la red es lo primero."))
+
+    version, installed, scans = xprotect_info()
+    age = (time.time() - installed) / 86400 if installed else None
+    checks.append(check("xprotect", "XProtect", "bad" if age is None or not scans else level_of(age, 30, 90),
+                        "no se encontró" if age is None else
+                        f"{'v' + version + ' · ' if version else ''}actualizado hace {round(age)} d{'' if scans else ' · escaneos apagados'}",
+                        "Revisa que las actualizaciones de seguridad automáticas estén activas."))
+
+    su = "/Library/Preferences/com.apple.SoftwareUpdate"
+    security_auto = pref(su, "CriticalUpdateInstall") != "0" and pref(su, "ConfigDataInstall") != "0"
+    macos_auto = pref(su, "AutomaticallyInstallMacOSUpdates") != "0"
+    store_auto = pref("/Library/Preferences/com.apple.commerce", "AutoUpdate") != "0"
+    manual = [n for n, on in (("seguridad", security_auto), ("macOS", macos_auto), ("App Store", store_auto)) if not on]
+    checks.append(check("auto_updates", "Actualizaciones automáticas",
+                        "bad" if not security_auto else "warn" if manual else "ok",
+                        "todas activas" if not manual else f"manuales: {', '.join(manual)}",
+                        "Ajustes › General › Actualización de software › Actualizaciones automáticas: activa todas."))
+
+    pending = pending_updates()
+    if pending is not None:
+        checks.append(check("pending_updates", "Actualizaciones pendientes", "warn" if pending else "ok",
+                            ", ".join(pending) if pending else "ninguna", "Instálalas desde Ajustes › General › Actualización de software."))
+
+    lock = sh(["sysadminctl", "-screenLock", "status"], merge=True)
+    delay = re.search(r"delay is (\d+) seconds", lock)
+    secs = 0 if "immediate" in lock else int(delay.group(1)) if delay else None
+    checks.append(check("screen_lock", "Bloqueo de pantalla", "bad" if secs is None else level_of(secs, 6, 3600),
+                        "no pide contraseña" if secs is None else "inmediato" if secs == 0 else f"pide contraseña a los {fmt_secs(secs)}",
+                        "Ajustes › Pantalla bloqueada › Pedir contraseña: inmediatamente."))
+
+    lw = "/Library/Preferences/com.apple.loginwindow"
+    auto_login, guest = pref(lw, "autoLoginUser"), pref(lw, "GuestEnabled") == "1"
+    checks.append(check("login", "Inicio de sesión", "bad" if auto_login else "warn" if guest else "ok",
+                        f"automático como {auto_login}" if auto_login else "cuenta de invitado activa" if guest else "con contraseña",
+                        "Ajustes › Usuarios y grupos: desactiva el inicio automático y la cuenta de invitado."))
+
+    sharing = sorted({SHARING_PORTS[p] for _, p, _, _ in open_ports if p in SHARING_PORTS})
+    checks.append(backups())
+
+    checks.append(check("sharing", "Compartir", "warn" if sharing else "ok", ", ".join(sharing) if sharing else "nada activo",
+                        "Ajustes › General › Compartir: apaga lo que no uses."))
+
+    reachable = [e for e in exposed if e["reachable"]]
+    n_ports = len({p for _, p, _, _ in open_ports})
+    checks.append(check("exposed", "Abierto a la red", "ok" if not reachable else "warn" if fw["enabled"] else "bad",
+                        f"{n_ports} puertos de {len(exposed)} procesos · {len(reachable)} alcanzables" if exposed else "nada, solo localhost",
+                        "Publica los puertos de Docker como 127.0.0.1:puerto:puerto y cierra lo que no uses."))
+    return checks, exposed, fw
+
+
+LEVELS = {"bad": 0, "warn": 1, "info": 2, "ok": 3}
+
+
+def level_of(v, warn, bad):
+    return "bad" if v >= bad else "warn" if v >= warn else "ok"
+
+
+def fmt_secs(s):
+    return f"{s // 60} min" if s >= 60 else f"{s} s"
+
+
+def signature(path):
+    out = sh(["codesign", "-dv", "--verbose=2", path], merge=True)
+    if "not signed" in out:
+        return {"signed": False}
+    if "Signature=adhoc" in out:
+        return {"signed": True, "valid": True, "signer": None, "adhoc": True}
+    auth = re.search(r"Authority=(.+)", out)
+    valid = subprocess.run(["codesign", "--verify", path], capture_output=True, timeout=60).returncode == 0
+    who = auth.group(1) if auth else None
+    who = "Apple" if who in ("Software Signing", "macOS Software Signing") else re.sub(r"^Developer ID Application: (.+?)(?: \(\w+\))?$", r"\1", who or "") or None
+    return {"signed": True, "valid": valid, "signer": who}
+
+
+def launch_items():
+    try:
+        baseline = json.loads(BASELINE_FILE.read_text())
+    except (OSError, ValueError):
+        baseline = None
+    # The first run records what is already there, so only items added later count as new.
+    first, baseline, now = baseline is None, baseline or {}, time.time()
+    items = []
+    for folder, scope in LAUNCH_DIRS:
+        for plist in sorted(folder.glob("*.plist")):
+            try:
+                pl = plistlib.loads(plist.read_bytes())
+            except (OSError, ValueError, plistlib.InvalidFileException):
+                pl = None
+            args = (pl or {}).get("ProgramArguments") or []
+            prog = (pl or {}).get("Program") or (args[0] if args else None)
+            seen = baseline.get(str(plist))
+            if not seen or seen.get("program") != prog:
+                seen = baseline[str(plist)] = {"first_seen": 0 if first else now, "program": prog}
+            item = {"path": str(plist), "label": (pl or {}).get("Label") or plist.stem, "scope": scope, "program": prog,
+                    "new": now - seen["first_seen"] < NEW_FOR, "first_seen": seen["first_seen"] or None}
+            if pl is None:
+                item.update(level="warn", note="no se pudo leer el plist")
+            elif not prog:
+                item.update(level="info", note="vacío: no ejecuta nada")
+            elif Path(prog).name in INTERPRETERS:
+                script = next((a for a in args[1:] if not a.startswith("-")), "")
+                item.update(level="warn" if item["new"] else "info", note=f"script: {script[:120]}")
+            elif not Path(prog).exists():
+                item.update(level="info", note="huérfano: el programa ya no existe, el plist se puede borrar")
+            else:
+                sig = signature(prog)
+                item.update(sig)
+                item["level"] = ("warn" if not sig["signed"] else "bad" if not sig["valid"] else "warn" if item["new"]
+                                 else "info" if sig.get("adhoc") else "ok")
+                item["note"] = ("sin firmar" if not sig["signed"] else "firma inválida" if not sig["valid"]
+                                else "firma ad-hoc, sin identidad" if sig.get("adhoc") else sig["signer"] or "firmado")
+            items.append(item)
+    BASELINE_FILE.write_text(json.dumps(baseline, indent=1))
+    return items
+
+
+HOME = Path.home()
+SSH_DIR = HOME / ".ssh"
+# Package managers install unsigned or ad-hoc binaries by design; what runs from here is not suspicious on its own.
+PKG_DIRS = (str(HOME / ".nvm") + "/", "/opt/homebrew/", "/usr/local/Cellar/", str(HOME / ".pyenv") + "/", str(HOME / ".cargo") + "/")
+PNPM_CONF = HOME / "Library/Preferences/pnpm"
+EOL_FALLBACK = {
+    "nodejs": {"16": "2023-09-11", "18": "2025-04-30", "19": "2023-06-01", "20": "2026-04-30", "21": "2024-06-01",
+               "22": "2027-04-30", "23": "2025-06-01", "24": "2028-04-30", "25": "2026-06-01", "26": "2029-04-30"},
+    "python": {"3.8": "2024-10-07", "3.9": "2025-10-31", "3.10": "2026-10-31", "3.11": "2027-10-31", "3.12": "2028-10-31",
+               "3.13": "2029-10-31", "3.14": "2030-10-31"},
+}
+_eol = {}
+
+
+def home_tilde(p):
+    return str(p).replace(str(HOME), "~", 1)
+
+
+def read_home(rel):
+    try:
+        return (HOME / rel).read_text(errors="replace")
+    except OSError:
+        return ""
+
+
+def user_bin(name):
+    return shutil.which(name, path=RUN_ENV.get("PATH"))
+
+
+def first_upper(s):
+    return s[:1].upper() + s[1:]
+
+
+def backups():
+    if "No destinations" in sh(["tmutil", "destinationinfo"], merge=True):
+        return check("backups", "Copias de seguridad", "warn", "Time Machine sin configurar",
+                     "Conecta un disco y actívalo en Ajustes › General › Time Machine, con la opción de cifrar.")
+    # Reading the latest backup needs Full Disk Access; without it all that is known is that one is configured.
+    m = re.search(r"(\d{4}-\d{2}-\d{2})-(\d{6})", sh(["tmutil", "latestbackup"], merge=True))
+    if not m:
+        return check("backups", "Copias de seguridad", "info", "Time Machine configurado")
+    age = (time.time() - time.mktime(time.strptime(m.group(1), "%Y-%m-%d"))) / 86400
+    return check("backups", "Copias de seguridad", level_of(age, 7, 30), f"última hace {round(age)} d",
+                 "Conecta el disco de Time Machine para que haga una copia.")
+
+
+def key_encrypted(text):
+    if "OPENSSH PRIVATE KEY" not in text:
+        return "ENCRYPTED" in text
+    try:
+        raw = base64.b64decode("".join(l for l in text.splitlines() if not l.startswith("-----")))
+    except ValueError:
+        return None
+    if not raw.startswith(b"openssh-key-v1\0"):
+        return None
+    n = int.from_bytes(raw[15:19], "big")
+    return raw[19:19 + n] != b"none"
+
+
+def git_root(path):
+    for p in path.parents:
+        if p in (HOME, Path("/")):
+            return None
+        if (p / ".git").exists():
+            return p
+    return None
+
+
+def ssh_keys():
+    paths = {f for f in [*SSH_DIR.glob("*"), *SSH_DIR.glob("*/*")] if f.is_file() and f.suffix != ".pub"}
+    for m in re.finditer(r'^\s*IdentityFile\s+"?([^"\n]+?)"?\s*$', read_home(".ssh/config"), re.M | re.I):
+        if "%" not in m.group(1):
+            paths.add(Path(os.path.expanduser(m.group(1))))
+    keys = []
+    for p in sorted(paths):
+        try:
+            if p.stat().st_size > 16384:
+                continue
+            text, mode = p.read_text(errors="replace"), p.stat().st_mode & 0o777
+        except OSError:
+            continue
+        if "PRIVATE KEY-----" in text[:100]:
+            keys.append({"name": p.name, "encrypted": key_encrypted(text), "open": bool(mode & 0o077), "repo": git_root(p)})
+    return keys
+
+
+def ssh_check():
+    keys = ssh_keys()
+    plain = [k["name"] for k in keys if k["encrypted"] is False]
+    in_repo = [k for k in keys if k["repo"]]
+    loose = [k["name"] for k in keys if k["open"]]
+    todo = []
+    if plain:
+        todo.append(f"sin passphrase: {', '.join(plain)}. Ponles una con `ssh-keygen -p -f <clave>`")
+    if in_repo:
+        todo.append("dentro de un repo git: " + ", ".join(f"{k['name']} ({home_tilde(k['repo'])})" for k in in_repo)
+                    + ". Muévelas a `~/.ssh`")
+    if loose:
+        todo.append(f"permisos abiertos: {', '.join(loose)}. Ciérralos con `chmod 600 <clave>`")
+    lvl = "bad" if any(k["repo"] and k["encrypted"] is False for k in keys) else "warn" if todo else "ok"
+    value = (f"{len(keys)} claves · " + (f"{len(plain)} sin passphrase" if plain else "todas con passphrase")) if keys else "ninguna"
+    return check("ssh", "Claves SSH", lvl, value, first_upper("; ".join(todo)) + "." if todo else None)
+
+
+def credentials_check():
+    found = []
+    aws = configparser.ConfigParser()
+    try:
+        aws.read_string(read_home(".aws/credentials"))
+    except configparser.Error:
+        pass
+    static = [s for s in aws.sections() if aws.has_option(s, "aws_access_key_id") and not aws.has_option(s, "aws_session_token")]
+    if static:
+        found.append(("AWS", f"claves fijas en ~/.aws/credentials ({', '.join(static)}): usa `aws configure sso` o `credential_process`"))
+    for rel in (".npmrc", "Library/Preferences/pnpm/rc", "Library/Preferences/pnpm/auth.ini", "Library/Preferences/pnpm/config.yaml"):
+        if re.search(r"(_authToken|_auth|_password)\s*[=:]\s*(?!\$\{)\S", read_home(rel)):
+            found.append(("npm", f"token en ~/{rel}: cámbialo por `${{NPM_TOKEN}}` y carga la variable desde tu gestor"))
+    if re.search(r"\bpassword\s+\S", read_home(".netrc")):
+        found.append(("netrc", "contraseñas en ~/.netrc: bórralas y usa el llavero"))
+    try:
+        docker = json.loads(read_home(".docker/config.json") or "{}")
+    except ValueError:
+        docker = {}
+    if not docker.get("credsStore") and any(isinstance(a, dict) and a.get("auth") for a in docker.get("auths", {}).values()):
+        found.append(("Docker", 'logins en ~/.docker/config.json: agrega `"credsStore": "osxkeychain"` y vuelve a hacer `docker login`'))
+    if re.search(r"oauth_token:\s*\S", read_home(".config/gh/hosts.yml")):
+        found.append(("GitHub CLI", "token en ~/.config/gh/hosts.yml: `gh auth logout` y `gh auth login` lo guardan en el llavero"))
+    if read_home(".git-credentials").strip():
+        found.append(("git", "contraseñas en ~/.git-credentials: `git config --global credential.helper osxkeychain` y borra el archivo"))
+    if re.search(r"^\s*password\s*[=:]\s*\S", read_home(".pypirc"), re.M):
+        found.append(("PyPI", "contraseña en ~/.pypirc: usa un token guardado con `keyring`"))
+    return check("credentials", "Credenciales en texto plano", "warn" if found else "ok",
+                 ", ".join(dict.fromkeys(n for n, _ in found)) if found else "ninguna a la vista",
+                 first_upper("; ".join(f for _, f in found)) + "." if found else None)
+
+
+def conf_keys(text):
+    return {k.replace("-", "").lower(): v.strip("'\"") for k, v in re.findall(r"^\s*([\w.@/:-]+?)\s*[=:]\s*(.*?)\s*$", text, re.M)}
+
+
+def package_managers_check():
+    npm = conf_keys(read_home(".npmrc"))
+    pnpm = {**conf_keys(read_home(PNPM_CONF / "rc")), **conf_keys(read_home(PNPM_CONF / "config.yaml"))}
+    parts, todo, lvl = [], [], "ok"
+    if user_bin("npm"):
+        age = npm.get("minreleaseage", "")
+        if age.isdigit() and int(age) > 0:
+            parts.append(f"npm espera {age} d")
+        else:
+            parts.append("npm sin espera")
+            todo.append("npm instala versiones recién publicadas: `npm config set min-release-age 3`")
+    if user_bin("pnpm"):
+        age, trust = pnpm.get("minimumreleaseage", ""), pnpm.get("trustpolicy")
+        # pnpm's built-in one-day wait is not strict: a too-new version is excluded from the check instead of blocked.
+        parts.append(f"pnpm espera {int(age) // 1440} d" if age.isdigit() and int(age) >= 1440 else "pnpm con la espera por defecto")
+        if not (age.isdigit() and int(age) >= 1440):
+            todo.append("fija la espera de pnpm para que sea estricta: `pnpm config set -g minimumReleaseAge 4320`")
+        if trust != "no-downgrade":
+            todo.append("frena versiones publicadas con menos garantías que la anterior: `pnpm config set -g trustPolicy no-downgrade`")
+        if pnpm.get("dangerouslyallowallbuilds") == "true":
+            lvl = "bad"
+            todo.append("`dangerouslyAllowAllBuilds` deja correr los scripts de cualquier dependencia: quítalo")
+    if not parts:
+        return check("package_managers", "npm y pnpm", "ok", "no instalados")
+    if todo:
+        lvl = "warn" if lvl == "ok" else lvl
+    elif npm.get("ignorescripts") != "true":
+        lvl = "info"
+        todo.append("opcional: `npm config set ignore-scripts true` evita que las dependencias corran scripts al instalar "
+                    "(pnpm ya los bloquea por defecto)")
+    return check("package_managers", "npm y pnpm", lvl, " · ".join(parts), first_upper("; ".join(todo)) + "." if todo else None)
+
+
+def eol_dates(product):
+    cache = _eol.setdefault(product, {"t": 0, "v": EOL_FALLBACK[product]})
+    if time.time() - cache["t"] > 86400:
+        cache["t"] = time.time()
+        try:
+            with urllib.request.urlopen(f"https://endoflife.date/api/{product}.json", timeout=5) as r:
+                cache["v"] = {x["cycle"]: x["eol"] for x in json.load(r) if isinstance(x.get("eol"), str)}
+        except (OSError, ValueError, KeyError, TypeError):
+            pass
+    return cache["v"]
+
+
+def runtime_installs():
+    found = []
+    for d in sorted((HOME / ".nvm/versions/node").glob("v*")):
+        found.append(("node", d.name.split(".")[0][1:], d.name[1:], "nvm", f"`nvm uninstall {d.name[1:]}`"))
+    for d in sorted(Path("/opt/homebrew/Cellar").glob("node*/*")):
+        found.append(("node", d.name.split(".")[0], d.name, "Homebrew", f"`brew uninstall {d.parent.name}`"))
+    if Path("/usr/local/bin/node").exists() and not os.path.realpath("/usr/local/bin/node").startswith("/usr/local/Cellar/"):
+        v = sh(["/usr/local/bin/node", "-v"], timeout=5).strip().lstrip("v")
+        if v:
+            found.append(("node", v.split(".")[0], v, "instalador de nodejs.org",
+                          "`sudo rm -rf /usr/local/bin/{node,npm,npx,corepack} /usr/local/lib/node_modules /usr/local/include/node`"))
+    for d in sorted(Path("/opt/homebrew/Cellar").glob("python@*/*")):
+        found.append(("python", d.parent.name.split("@")[1], d.name, "Homebrew", f"`brew uninstall {d.parent.name}`"))
+    for d in sorted((HOME / ".pyenv/versions").glob("*")):
+        m = re.match(r"\d+\.\d+", d.name)
+        if m:
+            found.append(("python", m.group(0), d.name, "pyenv", f"`pyenv uninstall {d.name}`"))
+    return found
+
+
+def node_default():
+    alias = read_home(".nvm/alias/default").strip().lstrip("v")
+    if alias:
+        versions = sorted((d.name[1:] for d in (HOME / ".nvm/versions/node").glob("v*")
+                           if d.name[1:] == alias or d.name[1:].startswith(alias + ".")),
+                          key=lambda v: [int(x) for x in re.findall(r"\d+", v)])
+        if versions:
+            return versions[-1]
+    node = user_bin("node")
+    return sh([node, "-v"], timeout=5).strip().lstrip("v") or None if node else None
+
+
+def runtimes_check():
+    today = time.strftime("%Y-%m-%d")
+    eol = {"node": eol_dates("nodejs"), "python": eol_dates("python")}
+    dead = [i for i in runtime_installs() if eol[i[0]].get(i[1], "9999") <= today]
+    default = node_default()
+    default_dead = default and eol["node"].get(default.split(".")[0], "9999") <= today
+    todo = []
+    if default_dead:
+        todo.append("tu node por defecto ya no recibe parches: `nvm install --lts` y `nvm alias default lts/*`")
+    if dead:
+        todo.append("sin soporte: " + "; ".join(f"{p} {v} ({where}) {how}" for p, _, v, where, how in dead))
+    value = (f"node {default}" if default else "node no encontrado") + (f" · {len(dead)} versiones sin soporte" if dead else " · todo con soporte")
+    return check("runtimes", "Versiones de node y python", "bad" if default_dead else "warn" if dead else "ok", value,
+                 first_upper(". ".join(todo)) + "." if todo else None)
+
+
+def docker_ports_check():
+    docker = user_bin("docker")
+    out = sh([docker, "ps", "--format", "{{.Names}}\t{{.Ports}}"], timeout=8) if docker else ""
+    if not out.strip():
+        return None
+    published = {}
+    for line in out.splitlines():
+        name, _, ports = line.partition("\t")
+        lan = sorted({int(p) for p in re.findall(r"(?:0\.0\.0\.0|\[::\]|:::?):(\d+)->", ports)})
+        if lan:
+            published[name] = lan
+    orb = user_bin("orb")
+    orb_lan = sh([orb, "config", "get", "docker.expose_ports_to_lan"], timeout=5).strip() if orb else ""
+    n = sum(len(p) for p in published.values())
+    if not published:
+        return check("docker_ports", "Puertos de Docker", "ok", "solo en localhost")
+    if orb_lan == "false":
+        return check("docker_ports", "Puertos de Docker", "ok", f"{n} puertos, OrbStack los deja en localhost")
+    listed = ", ".join(f"{c} ({', '.join(map(str, p[:4]))}{'…' if len(p) > 4 else ''})" for c, p in list(published.items())[:6])
+    more = f" y {len(published) - 6} más" if len(published) > 6 else ""
+    how = ("Con OrbStack, en tu terminal: `orb config set docker.expose_ports_to_lan false`; todos quedan en localhost sin tocar los compose."
+           if orb else "En Docker Desktop › Settings › Docker Engine agrega `\"ip\": \"127.0.0.1\"` y recrea los contenedores.")
+    return check("docker_ports", "Puertos de Docker", "warn", f"{n} puertos de {len(published)} contenedores abiertos a la red",
+                 f"{how} Uno por uno: publica `127.0.0.1:puerto:puerto` en el compose. Abiertos: {listed}{more}.")
+
+
+def dev_checks():
+    return [c for c in (ssh_check(), credentials_check(), package_managers_check(), runtimes_check(), docker_ports_check()) if c]
+
+
+CONN_EVERY = 30
+CONN_WINDOW = 24 * 3600
+LEARN_FOR = 86400
+CONNS = {}
+CONN_LOCK = threading.Lock()
+OUTBOUND_FILE = BASE / "outbound-baseline.json"
+OUTBOUND = {"since": None, "seen": {}}
+TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+SUSPECT_DIRS = ("/tmp/", "/private/tmp/", "/private/var/tmp/", "/Users/Shared/", str(HOME / "Downloads") + "/")
+DOWNLOADERS = {"curl", "wget", "nc", "ncat", "socat", "osascript", "base64"}
+SIG_POOL, DNS_POOL = ThreadPoolExecutor(2), ThreadPoolExecutor(4)
+_pids, _sigs, _ptr = {}, {}, {}
+
+
+def established():
+    for line in sh(["netstat", "-anv", "-p", "tcp"]).splitlines():
+        m = re.match(r"tcp\S*\s+\d+\s+\d+\s+\S+\s+(\S+)\.(\d+)\s+ESTABLISHED\s+(?:\d+\s+){4}(.+?):(\d+)\s", line)
+        if not m:
+            continue
+        try:
+            ip = ipaddress.ip_address(m.group(1).split("%")[0])
+        except ValueError:
+            continue
+        if not (ip.is_loopback or ip.is_link_local or ip.is_unspecified):
+            yield str(ip), int(m.group(2)), m.group(3), int(m.group(4))
+
+
+def owner(pid, proc):
+    hit = _pids.get(pid)
+    if not hit or hit[0] != proc:
+        path = exe_path(pid) or proc
+        # Group helpers under their app: "Brave Browser.app/…/Helper.app/…" counts as Brave Browser.
+        app = re.match(r"(.+?\.(?:app|systemextension))/", path)
+        hit = _pids[pid] = (proc, app.group(1) if app else path)
+    return hit[1]
+
+
+def cached_signature(path):
+    try:
+        mtime = os.stat(path).st_mtime
+    except OSError:
+        return {"signed": False, "missing": True}
+    hit = _sigs.get(path)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    if hit is None or hit[1] is not None:
+        _sigs[path] = (mtime, None)
+        SIG_POOL.submit(lambda: _sigs.__setitem__(path, (mtime, signature(path))))
+    return None
+
+
+def resolve(ip):
+    try:
+        _ptr[ip] = socket.gethostbyaddr(ip)[0]
+    except OSError:
+        _ptr[ip] = ""
+
+
+def host_name(ip):
+    addr = ipaddress.ip_address(ip)
+    if addr in TAILSCALE_NET:
+        return f"Tailscale {ip}"
+    if addr.is_private:
+        return f"red local {ip}"
+    if ip not in _ptr:
+        _ptr[ip] = None
+        DNS_POOL.submit(resolve, ip)
+    return _ptr[ip] or ip
+
+
+def conn_sampler():
+    try:
+        OUTBOUND.update(json.loads(OUTBOUND_FILE.read_text()))
+    except (OSError, ValueError):
+        OUTBOUND.update(since=time.time(), seen={})
+    while True:
+        now, dirty = time.time(), False
+        with CONN_LOCK:
+            for ip, port, proc, pid in established():
+                path = owner(pid, proc)
+                entry = CONNS.setdefault((path, ip, port), [now, now, 0])
+                entry[1], entry[2] = now, entry[2] + 1
+                if path not in OUTBOUND["seen"]:
+                    OUTBOUND["seen"][path], dirty = now, True
+            for key in [k for k, e in CONNS.items() if now - e[1] > CONN_WINDOW]:
+                del CONNS[key]
+        if dirty:
+            OUTBOUND_FILE.write_text(json.dumps(OUTBOUND, indent=1))
+        if len(_pids) > 5000:
+            _pids.clear()
+        time.sleep(CONN_EVERY)
+
+
+def outbound():
+    now = time.time()
+    with CONN_LOCK:
+        entries = list(CONNS.items())
+    by = {}
+    for (path, ip, port), (_, last, n) in entries:
+        p = by.setdefault(path, {"dests": collections.Counter(), "last": 0})
+        p["dests"][(ip, port)] += n
+        p["last"] = max(p["last"], last)
+    rows = []
+    for path, p in by.items():
+        sig = cached_signature(path) if path.startswith("/") else {"signed": False}
+        seen = OUTBOUND["seen"].get(path, now)
+        new = seen - (OUTBOUND["since"] or now) > LEARN_FOR and now - seen < NEW_FOR
+        managed = path.startswith(PKG_DIRS)
+        if sig is None:
+            lvl, note = "info", "verificando firma…"
+        elif not sig.get("signed") or sig.get("adhoc"):
+            what = "firma ad-hoc" if sig.get("adhoc") else "sin firmar"
+            lvl, note = ("info", f"{what}, instalado con un gestor de paquetes") if managed else ("warn", what)
+        elif not sig.get("valid"):
+            lvl, note = "bad", "firma inválida"
+        else:
+            lvl, note = "ok", sig.get("signer") or "firmado"
+        if new and lvl in ("ok", "info"):
+            lvl = "warn"
+        hosts = list(dict.fromkeys(host_name(ip) + ("" if port in (80, 443) else f":{port}") for (ip, port), _ in p["dests"].most_common(8)))
+        rows.append({"name": re.sub(r"\.(app|systemextension)$", "", Path(path).name), "path": path, "level": lvl, "note": note, "new": new,
+                     "hosts": hosts[:5], "destinations": len(p["dests"]), "active": now - p["last"] < CONN_EVERY * 2,
+                     "last": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(p["last"]))})
+    rows.sort(key=lambda r: (LEVELS[r["level"]], not r["active"], -r["destinations"]))
+    return {"since": OUTBOUND["since"], "learning": now - (OUTBOUND["since"] or now) < LEARN_FOR, "every": CONN_EVERY,
+            "window_h": CONN_WINDOW // 3600, "processes": rows}
+
+
+def suspicious():
+    procs = {}
+    for line in sh(["ps", "-axww", "-o", "pid=,ppid=,comm="]).splitlines():
+        m = re.match(r"\s*(\d+)\s+(\d+)\s+(.+)$", line)
+        if m:
+            procs[int(m.group(1))] = (int(m.group(2)), m.group(3).strip())
+    with CONN_LOCK:
+        online = {path for (path, _, _), e in CONNS.items() if time.time() - e[1] < CONN_EVERY * 2}
+    found = []
+    for pid, (ppid, comm) in procs.items():
+        name, parent = Path(comm).name, Path(procs.get(ppid, (0, ""))[1]).name
+        why, lvl = None, "warn"
+        if comm.startswith(SUSPECT_DIRS):
+            why = "corre desde una carpeta temporal o de descargas"
+        elif name in DOWNLOADERS and parent in FW_INTERPRETERS:
+            why = f"lo lanzó {parent}: así suele bajar y correr código un paquete infectado"
+        elif comm in online and not comm.startswith(PKG_DIRS):
+            sig = cached_signature(comm)
+            if sig and (not sig.get("signed") or sig.get("adhoc")):
+                why = "sin firma y con conexiones a internet"
+        elif comm.startswith("/") and not os.path.exists(comm):
+            why, lvl = "su ejecutable ya no está en el disco (lo actualizaron o lo borraron)", "info"
+        if why:
+            found.append({"pid": pid, "name": name, "path": comm, "parent": parent, "level": lvl, "note": why})
+    return sorted(found, key=lambda f: (LEVELS[f["level"]], f["name"]))
+
+
+def refresh_security():
+    try:
+        all_ports = listeners()
+        checks, exposed, fw = posture({l for l in all_ports if not l[0].startswith(LOOPBACK)}, all_ports)
+        SECURITY.update(status="ok", t=time.time(), result={
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "checks": checks, "dev": dev_checks(), "firewall": fw, "exposed": exposed,
+            "launch": launch_items(), "suspicious": suspicious()})
+    except Exception:
+        SECURITY.update(status="error", t=time.time())
+
+
+def security_state():
+    with SECURITY_LOCK:
+        if SECURITY["status"] != "running" and time.time() - SECURITY["t"] > SECURITY_EVERY:
+            SECURITY["status"] = "running"
+            threading.Thread(target=refresh_security, daemon=True).start()
+    return {k: SECURITY[k] for k in ("status", "result")}
+
+
+SCAN_ROOTS = [Path.home() / "Downloads", Path.home() / "Desktop", Path("/Applications"), Path.home() / "Applications",
+              Path("/Users/Shared"), Path("/private/tmp"), Path("/private/var/tmp")]
+MALWARE = {"status": "idle", "result": None}
+MALWARE_LOCK = threading.Lock()
+MALWARE_FILE = BASE / "malware-scan.json"
+MALWARE_EVERY = 24 * 3600
+MALWARE_MAX_BYTES = 200 * 1024 ** 2
+
+
+def yara_bin():
+    return shutil.which("yara", path=RUN_ENV.get("PATH"))
+
+
+def run_malware_scan(yara):
+    start = time.time()
+    launch = [i["program"] for i in (SECURITY["result"] or {}).get("launch", []) if i.get("program")]
+    targets = [str(p) for p in SCAN_ROOTS if p.exists()] + [p for p in launch if Path(p).is_file()]
+    targets_file = BASE / "malware-scan.targets"
+    targets_file.write_text("\n".join(targets) + "\n")
+    try:
+        # XProtect's own rules: the same signatures macOS uses, so no third-party database to trust or keep current.
+        p = subprocess.run(["nice", "-n", "15", yara, "-r", "-N", "-w", "-p", "2", f"--skip-larger={MALWARE_MAX_BYTES}",
+                            "--scan-list", str(XPROTECT_RULES), str(targets_file)],
+                           capture_output=True, text=True, timeout=3600)
+    except (OSError, subprocess.TimeoutExpired):
+        MALWARE.update(status="error")
+        return
+    if p.returncode != 0 and not p.stdout and "error scanning" not in p.stderr:
+        MALWARE.update(status="error")
+        return
+    matches = [{"rule": r, "path": f} for r, _, f in (l.partition(" ") for l in p.stdout.splitlines() if " " in l)]
+    result = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S"), "duration": round(time.time() - start),
+              "roots": [t for t in targets if t not in launch], "launch_programs": len([t for t in targets if t in launch]),
+              "matches": matches, "unreadable": p.stderr.count("error scanning"), "rules_version": xprotect_info()[0]}
+    MALWARE_FILE.write_text(json.dumps(result, indent=1))
+    MALWARE.update(status="ok", result=result)
+
+
+def start_malware_scan():
+    yara = yara_bin()
+    if not yara:
+        return 409, {"error": "Falta yara: instálalo con `brew install yara`"}
+    if not XPROTECT_RULES.exists():
+        return 409, {"error": "No se encontraron las reglas de XProtect"}
+    with MALWARE_LOCK:
+        if MALWARE["status"] == "running":
+            return 409, {"error": "El escaneo ya está corriendo"}
+        MALWARE["status"] = "running"
+    threading.Thread(target=run_malware_scan, args=(yara,), daemon=True).start()
+    return 200, malware_state()
+
+
+def malware_state():
+    return {**MALWARE, "yara": bool(yara_bin()), "every_h": MALWARE_EVERY // 3600}
+
+
+def malware_scheduler():
+    time.sleep(120)
+    while True:
+        last = (MALWARE["result"] or {}).get("ts")
+        stale = not last or time.time() - time.mktime(time.strptime(last, "%Y-%m-%dT%H:%M:%S")) > MALWARE_EVERY
+        # Several minutes of CPU: on battery it waits for the charger.
+        if stale and battery_now()["source"] == "AC":
+            start_malware_scan()
+        time.sleep(3600)
+
+
 def metrics():
     load = os.getloadavg()
     return {
@@ -565,6 +1388,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, SPEEDTEST)
         if path == "/api/network/scan":
             return self.send(200, scan_state())
+        if path == "/api/security":
+            return self.send(200, security_state())
+        if path == "/api/security/scan":
+            return self.send(200, malware_state())
+        if path == "/api/security/connections":
+            return self.send(200, outbound())
         if path == "/api/reports":
             return self.send(200, list_reports())
         if path == "/api/state":
@@ -604,6 +1433,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(*set_trusted(bool(body.get("trusted"))))
         if self.path == "/api/network/scan":
             return self.send(*start_scan())
+        if self.path == "/api/security/scan":
+            return self.send(*start_malware_scan())
         if self.path == "/api/analyze":
             return self.send(*launch(None, "__analysis__", "Nuevo repaso (Claude headless)", f'bash "{REPO}/bin/analyze.sh"'))
         m = re.fullmatch(r"/api/jobs/(\w+)/cancel", self.path)
@@ -626,9 +1457,15 @@ if __name__ == "__main__":
         SPEEDTEST.update(status="ok", result=json.loads(SPEEDTEST_FILE.read_text()))
     except (OSError, ValueError):
         pass
+    try:
+        MALWARE.update(status="ok", result=json.loads(MALWARE_FILE.read_text()))
+    except (OSError, ValueError):
+        pass
     RUN_ENV.update(os.environ, PATH=schedule.user_path(), HOMEBREW_NO_AUTO_UPDATE="1")
     Handler.token = secrets.token_urlsafe(24)
     Handler.allowed_hosts = {f"localhost:{port}", f"127.0.0.1:{port}"}
     threading.Thread(target=sampler, daemon=True).start()
+    threading.Thread(target=malware_scheduler, daemon=True).start()
+    threading.Thread(target=conn_sampler, daemon=True).start()
     print(f"Repaso dashboard: http://localhost:{port}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
