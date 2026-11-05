@@ -2,16 +2,17 @@
 
 **English** · [Español](README.es.md)
 
-A periodic health check for your Mac (RAM, swap, CPU, battery, disk, Docker and login items) with a local dashboard. [Claude Code](https://claude.com/claude-code) analyzes the data and suggests actions. You review each one and run it with a button, after confirming.
+A periodic health check for your Mac (RAM, swap, CPU, battery, disk, Docker, git repos and login items) with a local dashboard. [Claude Code](https://claude.com/claude-code) analyzes the data and suggests actions. You review each one and run it with a button, after confirming.
 
 > [!WARNING]
-> Some suggested actions delete data (caches, Docker images or volumes, `node_modules`). Nothing runs without your confirmation, but you are responsible for what you approve. Read every command before running it. Provided as is, with no warranty (see [LICENSE](LICENSE)).
+> Some suggested actions delete data (caches, Docker images or volumes, `node_modules`, git branches and worktrees). Nothing runs without your confirmation, but you are responsible for what you approve. Read every command before running it. Provided as is, with no warranty (see [LICENSE](LICENSE)).
 
 ## How it works
 
 ```
 collect.sh ──────────► runs/<stamp>.txt ─┐
-docker_volumes.py ───► docker/*.txt ─────┼─► Claude (skill "repaso-sistema") ─► reports/<stamp>.json ─► dashboard
+docker_volumes.py ───► docker/*.txt ─────┤
+git_repos.py ────────► git/*.tsv ────────┼─► Claude (skill "repaso-sistema") ─► reports/<stamp>.json ─► dashboard
                                          │     interactive session or headless                          │
 state.json / exec.log ◄──────────────────┴───────────────── "Run" button (with confirmation) ◄──────────┘
 ```
@@ -21,6 +22,8 @@ state.json / exec.log ◄──────────────────�
 | `bin/collect.sh` | Read-only snapshot: processes, memory, battery, disk usage, caches, LaunchAgents | No |
 | `bin/docker_volumes.py` | Classifies Docker images, build cache and volumes by risk. It inspects each volume's contents and protects anything that looks like a database | No |
 | `skill/SKILL.md` | Analysis criteria and the report schema | Yes |
+| `bin/git_repos.py` | Classifies local git branches and worktrees by risk, offline. It never suggests branches in use, protected, with unpushed commits or that only exist locally | No |
+| `bin/git_cleanup.py` | Applies those lists from the dashboard. It skips branches that changed since the scan and saves a script to restore the deleted ones | No |
 | `bin/analyze.sh` | `collect.sh` + headless `claude -p`. Claude can only read files and write to `reports/` | Yes |
 | `app/server.py` + `app/dashboard.html` | Dashboard on `localhost:8765`: live metrics, findings, Run button, concurrent jobs, history, security checks | No |
 
@@ -89,6 +92,7 @@ The analysis has to read your machine (processes, disk, Docker), so it runs loca
 |---|---|
 | `protected-volumes.txt` | Glob patterns for Docker volumes that are never suggested for deletion (e.g. DB backups) |
 | `branch-volumes.txt` | Glob patterns for per-branch or worktree DB copies. These are suggested with medium risk |
+| `protected-branches.txt` | Glob patterns for git branches that are never suggested for deletion. Each repo's default branch is always protected |
 | `trusted-networks.txt` | Router MACs of the networks where the dashboard may look for connected devices (set from the dashboard's "Es mi red de casa" button) |
 | `launch-baseline.json` | LaunchAgents and LaunchDaemons already seen, so new ones are flagged for a week |
 | `malware-scan.json` | Result of the last malware scan |
@@ -100,7 +104,8 @@ The analysis has to read your machine (processes, disk, Docker), so it runs loca
 Environment variables:
 
 - `MAC_OPTIMIZER_HOME`: data directory.
-- `MAC_OPTIMIZER_PROJECT_DIRS`: where to look for stale `node_modules`. Default: `~/Projects ~/Desktop ~/code`.
+- `MAC_OPTIMIZER_PROJECT_DIRS`: where to look for stale `node_modules` and git repos. Default: `~/Projects ~/Desktop ~/code`.
+- `MAC_OPTIMIZER_BRANCH_DAYS`: days without commits, changes or checkouts before a branch or worktree counts as inactive. Default: 30.
 - `MAC_OPTIMIZER_MODEL`: model for headless analysis.
 
 ## Security checks

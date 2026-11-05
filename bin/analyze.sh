@@ -16,7 +16,7 @@ REPORT="$DATA/reports/$STAMP.json"
 echo "→ Snapshot: $SNAP"
 
 PROMPT="Modo headless del skill repaso-sistema. Las instrucciones están en $REPO/skill/SKILL.md: léelas y sigue los pasos desde el 2 en adelante.
-El snapshot ya fue generado: $SNAP (y $DATA/docker/summary.json).
+El snapshot ya fue generado: $SNAP (y $DATA/docker/summary.json y $DATA/git/summary.json).
 Escribe el reporte en $REPORT respetando exactamente el esquema del skill.
 No ejecutes comandos ni acciones de limpieza; solo lee archivos y escribe el reporte.
 Al terminar, responde con una sola línea: el campo summary del reporte."

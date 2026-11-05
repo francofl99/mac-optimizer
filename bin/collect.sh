@@ -15,6 +15,9 @@ size_of() { [ -e "$1" ] && du -sk "$1" 2>/dev/null | awk -v p="$1" '{printf "%8.
 DOCKER_DF="$(mktemp)"
 python3 "$HERE/docker_volumes.py" > "$DOCKER_DF" 2>&1 &
 DOCKER_PID=$!
+GIT_REPOS="$(mktemp)"
+MAC_OPTIMIZER_PROJECT_DIRS="${PROJECT_DIRS[*]}" python3 "$HERE/git_repos.py" > "$GIT_REPOS" 2>&1 &
+GIT_PID=$!
 
 {
 section "SYSTEM"
@@ -106,6 +109,9 @@ if docker info >/dev/null 2>&1; then
 fi
 command -v orb >/dev/null && echo "OrbStack: $(orb status 2>/dev/null)  memory_mib: $(orb config get memory_mib 2>/dev/null)"
 
+section "GIT REPOS (branches, worktrees)"
+wait "$GIT_PID" 2>/dev/null; cat "$GIT_REPOS"
+
 section "HOMEBREW"
 if command -v brew >/dev/null; then
   export HOMEBREW_NO_AUTO_UPDATE=1
@@ -131,6 +137,6 @@ echo "Total processes: $(ps -A | wc -l | tr -d ' ')"
 echo "Helper/Renderer procs: $(ps -Axo comm= | grep -ciE 'helper|renderer')"
 section "DONE"
 } > "$OUT" 2>&1
-rm -f "$DOCKER_DF"
+rm -f "$DOCKER_DF" "$GIT_REPOS"
 
 echo "$OUT"
