@@ -1,0 +1,10 @@
+# Branches never suggested for deletion (glob patterns, one per line), on top of each repo's default branch.
+# Copied to ~/.mac-optimizer/protected-branches.txt by install.sh.
+main
+master
+develop
+development
+staging
+production
+release/*
+hotfix/*

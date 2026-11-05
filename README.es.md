@@ -2,16 +2,17 @@
 
 [English](README.md) · **Español**
 
-Repaso periódico del Mac (RAM, swap, CPU, batería, disco, Docker y arranque) con un dashboard local. [Claude Code](https://claude.com/claude-code) analiza los datos y propone acciones. Tú revisas cada una y la ejecutas desde un botón, con confirmación.
+Repaso periódico del Mac (RAM, swap, CPU, batería, disco, Docker, repos git y arranque) con un dashboard local. [Claude Code](https://claude.com/claude-code) analiza los datos y propone acciones. Tú revisas cada una y la ejecutas desde un botón, con confirmación.
 
 > [!WARNING]
-> Algunas acciones borran datos (caches, imágenes o volúmenes de Docker, `node_modules`). Nada se ejecuta sin tu confirmación, pero eres responsable de lo que apruebas. Lee cada comando antes de ejecutarlo. Se entrega tal cual, sin garantía (ver [LICENSE](LICENSE)).
+> Algunas acciones borran datos (caches, imágenes o volúmenes de Docker, `node_modules`, branches y worktrees de git). Nada se ejecuta sin tu confirmación, pero eres responsable de lo que apruebas. Lee cada comando antes de ejecutarlo. Se entrega tal cual, sin garantía (ver [LICENSE](LICENSE)).
 
 ## Cómo funciona
 
 ```
 collect.sh ──────────► runs/<stamp>.txt ─┐
-docker_volumes.py ───► docker/*.txt ─────┼─► Claude (skill "repaso-sistema") ─► reports/<stamp>.json ─► dashboard
+docker_volumes.py ───► docker/*.txt ─────┤
+git_repos.py ────────► git/*.tsv ────────┼─► Claude (skill "repaso-sistema") ─► reports/<stamp>.json ─► dashboard
                                          │     sesión interactiva o headless                            │
 state.json / exec.log ◄──────────────────┴────────────── botón Ejecutar (con confirmación) ◄────────────┘
 ```
@@ -21,6 +22,8 @@ state.json / exec.log ◄──────────────────�
 | `bin/collect.sh` | Snapshot de solo lectura: procesos, memoria, batería, disco, caches, LaunchAgents | No |
 | `bin/docker_volumes.py` | Clasifica imágenes, build cache y volúmenes por riesgo. Mira el contenido de cada volumen y protege lo que parece una base de datos | No |
 | `skill/SKILL.md` | Criterios del análisis y esquema del reporte | Sí |
+| `bin/git_repos.py` | Clasifica por riesgo las branches y worktrees locales de git, sin usar la red. Nunca sugiere branches en uso, protegidas, con commits sin pushear o que solo existen en local | No |
+| `bin/git_cleanup.py` | Aplica esas listas desde el dashboard. Omite las branches que cambiaron desde el escaneo y guarda un script para restaurar las borradas | No |
 | `bin/analyze.sh` | `collect.sh` + `claude -p` en modo headless. Claude solo puede leer archivos y escribir en `reports/` | Sí |
 | `app/server.py` + `app/dashboard.html` | Dashboard en `localhost:8765`: métricas en vivo, hallazgos, botón Ejecutar, acciones en paralelo, historial, chequeos de seguridad | No |
 
@@ -87,6 +90,7 @@ El análisis tiene que leer tu Mac (procesos, disco, Docker), así que corre loc
 |---|---|
 | `protected-volumes.txt` | Patrones glob de volúmenes Docker que nunca se sugieren para borrar (por ejemplo, backups de DB) |
 | `branch-volumes.txt` | Patrones de copias de DB por branch o worktree. Se sugieren con riesgo medio |
+| `protected-branches.txt` | Patrones glob de branches de git que nunca se sugieren para borrar. La branch principal de cada repo siempre está protegida |
 | `trusted-networks.txt` | MAC del router de las redes donde el dashboard puede buscar dispositivos conectados (se marca con el botón "Es mi red de casa") |
 | `launch-baseline.json` | LaunchAgents y LaunchDaemons ya vistos, para marcar los nuevos durante una semana |
 | `malware-scan.json` | Resultado del último escaneo de malware |
@@ -98,7 +102,8 @@ El análisis tiene que leer tu Mac (procesos, disco, Docker), así que corre loc
 Variables de entorno:
 
 - `MAC_OPTIMIZER_HOME`: carpeta de datos.
-- `MAC_OPTIMIZER_PROJECT_DIRS`: dónde buscar `node_modules` viejos. Por defecto: `~/Projects ~/Desktop ~/code`.
+- `MAC_OPTIMIZER_PROJECT_DIRS`: dónde buscar `node_modules` viejos y repos git. Por defecto: `~/Projects ~/Desktop ~/code`.
+- `MAC_OPTIMIZER_BRANCH_DAYS`: días sin commits, cambios ni checkouts para que una branch o un worktree cuente como inactivo. Por defecto: 30.
 - `MAC_OPTIMIZER_MODEL`: modelo para el análisis headless.
 
 ## Chequeos de seguridad

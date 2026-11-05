@@ -1,6 +1,6 @@
 ---
 name: repaso-sistema
-description: Repaso del Mac (procesos, RAM, CPU, disco, batería, Docker, arranque) con recomendaciones de optimización y dashboard local (mac-optimizer). Usar cuando el usuario pida "repaso del sistema", "qué puedo optimizar", "/repaso-sistema", "abrir el dashboard del repaso", o cuando lo dispare la rutina programada.
+description: Repaso del Mac (procesos, RAM, CPU, disco, batería, Docker, repos git, arranque) con recomendaciones de optimización y dashboard local (mac-optimizer). Usar cuando el usuario pida "repaso del sistema", "qué puedo optimizar", "/repaso-sistema", "abrir el dashboard del repaso", o cuando lo dispare la rutina programada.
 ---
 
 # Repaso del sistema (mac-optimizer)
@@ -12,14 +12,15 @@ Solo diagnóstico. Nunca borrar archivos, matar procesos, desinstalar ni cambiar
   - `runs/<stamp>.txt`: snapshots.
   - `reports/<stamp>.json`: reportes.
   - `docker/summary.json` y `docker/volumes-*.txt`: clasificación de Docker.
+  - `git/summary.json` y `git/*.tsv`: clasificación de branches, worktrees y mantenimiento de los repos.
   - `state.json`: lo que el usuario marcó en el dashboard.
   - `exec.log`: acciones ejecutadas.
-  - `protected-volumes.txt` y `branch-volumes.txt`: patrones del usuario.
+  - `protected-volumes.txt`, `branch-volumes.txt` y `protected-branches.txt`: patrones del usuario.
 
 ## Pasos
 
 1. Ejecutar `bash ~/.mac-optimizer/repo/bin/collect.sh` en background (tarda unos 3-4 min). Imprime la ruta del snapshot. En modo headless este paso ya viene hecho.
-2. Leer el snapshot completo y `docker/summary.json`.
+2. Leer el snapshot completo, `docker/summary.json` y `git/summary.json`.
 3. Si hay reportes previos en `reports/`, leer el más reciente y comparar (crecimiento de disco, swap, procesos nuevos, ciclos de batería) → campo `changes`.
 4. Leer `state.json` y `exec.log`:
    - Los hallazgos con `status: "ignored"` no se vuelven a sugerir.
@@ -37,7 +38,7 @@ Solo diagnóstico. Nunca borrar archivos, matar procesos, desinstalar ni cambiar
   "metrics": { "swap_used_gb": 0, "compressed_gb": 0, "mem_free_pct": 0, "disk_free_gb": 0, "load1": 0, "battery_cycles": 0, "battery_max_capacity": 0, "processes": 0 },
   "disk_breakdown": [{ "label": "...", "gb": 0, "kind": "docker|cache|app|dev|user|system" }],
   "docker": { "images_gb": 0, "images_reclaim_gb": 0, "volumes_gb": 0, "volumes_reclaim_gb": 0, "build_cache_gb": 0, "build_cache_reclaim_gb": 0, "vm_disk_gb": 0, "running": 0 },
-  "findings": [{ "id": "slug-estable", "area": "disk|ram|cpu|battery|startup", "title": "...", "detail": "...", "impact": "~39 GB", "savings_gb": 0, "risk": "bajo|medio|alto", "command": "..." }],
+  "findings": [{ "id": "slug-estable", "area": "disk|ram|cpu|battery|startup|git", "title": "...", "detail": "...", "impact": "~39 GB", "savings_gb": 0, "risk": "bajo|medio|alto", "command": "..." }],
   "changes": ["..."]
 }
 ```
@@ -65,6 +66,7 @@ El `risk` define la confirmación: con `bajo` alcanza un clic; con `medio` o `al
 - **RAM**: memory pressure, swap > 2 GB, apps con muchos helpers (Electron, navegadores), contenedores Docker corriendo hace días, procesos huérfanos.
 - **CPU / batería**: energy impact alto sostenido, assertions que impiden el reposo, servicios nativos (mysqld, postgres) que duplican los de Docker, salud de la batería y hábitos de carga.
 - **Disco**: Docker, caches regenerables, node_modules inactivos, restos de apps desinstaladas, Downloads, papelera.
+- **Git**: branches inactivas, worktrees olvidados, repos sin fetch. Ver reglas abajo.
 - **Arranque**: LaunchAgents/Daemons de apps que ya no están en /Applications.
 - Distinguir cache regenerable (riesgo bajo) de datos de usuario (riesgo medio/alto).
 
@@ -76,3 +78,24 @@ El `risk` define la confirmación: con `bajo` alcanza un clic; con `medio` o `al
 - `volumes-protected.txt` y los volúmenes en uso no se tocan nunca. El clasificador ya aplica los patrones del usuario y detecta archivos de bases de datos.
 - Imágenes: `docker image prune -a -f --filter until=720h` respeta las que usa cualquier contenedor. Listar las que son `local_build` en `summary.json`, porque habría que reconstruirlas.
 - Build cache: `docker builder prune -a -f`.
+
+### Git: reglas duras
+
+`bin/git_repos.py` ya clasificó todo sin tocar la red. Una branch está inactiva si no tuvo commits, cambios ni checkouts en `stale_days` días. Nunca se sugieren las que están en uso, las protegidas (`protected_patterns` y la principal de cada repo), las que tienen commits sin pushear ni las que solo existen en local sin mergear.
+
+Las branches casi no ocupan disco: el impacto es orden, no espacio. `savings_gb` = 0 salvo en worktrees. Todos los hallazgos con `area: "git"` y solo con estos comandos:
+
+| id | Lista | Riesgo | `command` |
+|---|---|---|---|
+| `git-branches-low-risk` | mergeadas en la principal o sin cambios respecto de origin | bajo | `python3 ~/.mac-optimizer/repo/bin/git_cleanup.py branches ~/.mac-optimizer/git/branches-low-risk.tsv` |
+| `git-branches-gone` | borradas en origin, sin mergear (casi siempre PRs con squash) | medio | `python3 ~/.mac-optimizer/repo/bin/git_cleanup.py branches ~/.mac-optimizer/git/branches-gone.tsv` |
+| `git-worktrees-prunable` | worktrees cuya carpeta ya no existe | bajo | `python3 ~/.mac-optimizer/repo/bin/git_cleanup.py worktree-prune ~/.mac-optimizer/git/worktrees-prunable.tsv` |
+| `git-worktrees-stale` | worktrees limpios sin uso; `savings_gb` = `worktrees.stale.gb` | medio | `python3 ~/.mac-optimizer/repo/bin/git_cleanup.py worktree-remove ~/.mac-optimizer/git/worktrees-stale.tsv` |
+| `git-gc` | repos con muchos objetos sueltos o packs | bajo | `python3 ~/.mac-optimizer/repo/bin/git_cleanup.py gc ~/.mac-optimizer/git/repos-gc.tsv` |
+| `git-remote-prune` | repos sin fetch hace más de 14 días | bajo | `python3 ~/.mac-optimizer/repo/bin/git_cleanup.py remote-prune ~/.mac-optimizer/git/repos-remote-prune.tsv` |
+
+- Un hallazgo por lista, solo si tiene elementos. En `detail`, los 3-5 repos con más casos (de `per_repo`) y la cantidad total.
+- `branches` borra solo si la branch no se movió ni está en uso desde el escaneo, y deja un script para restaurarlas en `~/.mac-optimizer/backup/git-branches-*.sh`. Mencionarlo en `detail`.
+- `git-remote-prune` usa la red (`git remote prune origin`, no descarga objetos). Al terminar, el próximo repaso detecta más branches borradas en origin: sugerirlo antes que `git-branches-gone` cuando el fetch de un repo es viejo.
+- `worktree-remove` no usa `--force`: git rechaza los worktrees con cambios o archivos sin trackear. Los que tienen cambios (`worktrees.dirty`) solo se informan.
+- Si `keep_reasons` tiene muchas "solo local, sin mergear", mencionarlas en un hallazgo informativo sin `command`: puede ser trabajo olvidado, y el usuario decide.
