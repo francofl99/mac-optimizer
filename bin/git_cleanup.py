@@ -11,12 +11,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from git_repos import SAFE_GIT, risky_config
+
 DATA = Path(os.environ.get("MAC_OPTIMIZER_HOME", Path.home() / ".mac-optimizer"))
 ENV = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
 
 
 def git(repo, *args, timeout=600):
-    return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True,
+    return subprocess.run(["git", *SAFE_GIT, "-C", repo, *args], capture_output=True, text=True,
                           stdin=subprocess.DEVNULL, env=ENV, timeout=timeout)
 
 
@@ -26,7 +28,10 @@ def rows(path):
         if line.strip():
             repo, *rest = line.split("\t")
             by_repo.setdefault(repo, []).append(rest)
-    return by_repo
+    risky = [r for r in by_repo if risky_config(r)]
+    for r in risky:
+        print(f"{r}: skipped, its git config runs commands")
+    return {r: v for r, v in by_repo.items() if r not in risky}
 
 
 def du_mb(path):
