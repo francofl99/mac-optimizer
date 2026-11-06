@@ -7,6 +7,7 @@ and prints a human summary for the snapshot.
 import fnmatch
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -24,11 +25,27 @@ SKIP_DIRS = {"node_modules", "vendor", "venv", "dist", "build", "target", "Pods"
 DEFAULT_PROTECTED = ["main", "master", "develop", "development", "staging", "production", "release/*", "hotfix/*"]
 # git status would otherwise refresh and rewrite the index of every worktree it inspects.
 ENV = {**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0", "LC_ALL": "C"}
+# A repo unpacked from an archive brings its own .git/config and hooks, and the scheduled scan runs git on it unattended.
+SAFE_GIT = ["-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"]
+RISKY_KEY = re.compile(r"core\.(sshcommand|gitproxy|askpass|pager|editor|alternaterefscommand)|sequence\.editor|ssh\.variant"
+                       r"|credential\..*helper|remote\..*\.(uploadpack|receivepack)|protocol\.(.*\.)?allow|gpg\..*program"
+                       r"|(filter|diff|merge)\..*\.(clean|smudge|process|command|textconv|driver)")
+LFS_FILTER = re.compile(r"git-lfs (clean -- %f|smudge -- %f|filter-process)")
+
+
+def risky_config(path):
+    """Repo or worktree config keys that make git run a command, other than the ones git-lfs installs."""
+    r = subprocess.run(["git", "-C", str(path), "config", "--list", "--show-scope", "--includes", "-z"],
+                       capture_output=True, text=True, stdin=subprocess.DEVNULL, env=ENV)
+    fields = r.stdout.split("\0")
+    entries = [(scope, *kv.partition("\n")[::2]) for scope, kv in zip(fields[::2], fields[1::2])]
+    return sorted({k for scope, k, v in entries if scope in ("local", "worktree")
+                   and RISKY_KEY.fullmatch(k) and not (k.startswith("filter.lfs.") and LFS_FILTER.fullmatch(v))})
 
 
 def git(repo, *args, timeout=120):
     try:
-        r = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True,
+        r = subprocess.run(["git", *SAFE_GIT, "-C", str(repo), *args], capture_output=True, text=True,
                            stdin=subprocess.DEVNULL, env=ENV, timeout=timeout)
     except subprocess.TimeoutExpired:
         return ""
@@ -190,6 +207,8 @@ def scan(repo, protected, now):
             cls, why = "prunable", "la carpeta ya no existe"
         elif w["locked"]:
             cls, why = "keep", "bloqueado (git worktree lock)"
+        elif risky_config(w["path"]):
+            cls, why = "keep", "config que ejecuta comandos"
         elif git(repo, "-C", w["path"], "status", "--porcelain").strip():
             cls, why = "keep", "cambios sin commitear"
         elif days is not None and days < STALE_DAYS:
@@ -224,7 +243,9 @@ def main():
     now = int(time.time())
     protected = protected_patterns()
     with ThreadPoolExecutor(8) as pool:
-        repos = list(pool.map(lambda r: scan(r, protected, now), find_repos()))
+        found = list(pool.map(lambda r: (r, risky_config(r)), find_repos()))
+        repos = list(pool.map(lambda r: scan(r, protected, now), [r for r, risky in found if not risky]))
+    skipped = [{"repo": tilde(r), "keys": risky} for r, risky in found if risky]
     OUT.mkdir(parents=True, exist_ok=True)
 
     write_tsv("branches-low-risk.tsv", [(r["repo"], b["name"], b["sha"], b["why"])
@@ -254,6 +275,7 @@ def main():
         "gc": [{"repo": tilde(r["repo"]), "git_gb": r["git_gb"], "loose_mb": r["loose_mb"], "packs": r["packs"]}
                for r in repos if r["needs_gc"]],
         "remote_prune": [{"repo": tilde(r["repo"]), "fetch_days": r["fetch_days"]} for r in repos if r["needs_remote_prune"]],
+        "skipped_risky_config": skipped,
         "per_repo": sorted(({"repo": tilde(r["repo"]), "default": r["default"], "branches": len(r["branches"]),
                              **r["counts"], "keep_reasons": r["keep_why"], "remote_refs": r["remote_refs"],
                              "fetch_days": r["fetch_days"], "git_gb": r["git_gb"],
@@ -275,6 +297,10 @@ def main():
     for w in sorted(wt["stale"]["items"], key=lambda w: -w["gb"])[:10]:
         print(f"  {w['gb']:5.1f} GB  {w['why']:>22s}  {tilde(w['path'])}")
     print(f"Repos needing gc: {len(summary['gc'])}  remote prune (fetch > {FETCH_STALE_DAYS}d): {len(summary['remote_prune'])}")
+    if skipped:
+        print(f"Skipped, local git config runs commands ({len(skipped)}):")
+        for s in skipped:
+            print(f"  {s['repo']}: {', '.join(s['keys'])}")
     print(f"Lists: {OUT}")
 
 
