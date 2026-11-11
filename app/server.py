@@ -9,6 +9,7 @@ import os
 import plistlib
 import re
 import secrets
+import shlex
 import signal
 import socket
 import threading
@@ -434,6 +435,12 @@ FW_KNOWN = {
     "remoted": ("Depuración de iPhone o iPad por red (Xcode)", None, "Solo hace falta si depuras en un dispositivo por Wi-Fi."),
     "remotepairingdeviced": ("Emparejamiento de iPhone o iPad (Xcode)", None, "Solo hace falta si depuras en un dispositivo por Wi-Fi."),
 }
+EXPOSED_KNOWN = {
+    "ControlCenter": ("Receptor AirPlay", "Apágalo en Ajustes › General › AirDrop y Handoff › Receptor AirPlay si no envías audio o video a este Mac. "
+                                          "Los updates de macOS suelen volver a activarlo."),
+    "rapportd": ("Continuidad (Handoff y portapapeles universal)", "Si no usas Handoff ni copias y pegas entre el iPhone y el Mac, bloquéalo."),
+}
+DOCKER_PROCS = {"com.docker.backend", "com.docker.vpnkit", "vpnkit-bridge", "OrbStack Helper", "limactl", "colima"}
 
 
 def exe_path(pid):
@@ -450,12 +457,19 @@ def fw_rules():
     return [(path.strip(), "block" not in rule.lower()) for path, rule in re.findall(r"^\d+ : (.+?)\s*\n\s*\((.+?)\)", out, re.M)]
 
 
-def fw_app(path, allowed, ports, sign):
+def fw_app(path, allowed, ports, sign, running):
     base = re.sub(r"\.(app|systemextension)$", "", Path(path).name)
     app = {"path": path, "name": base, "allowed": allowed, "what": None, "fix": None}
     if not allowed:
         return {**app, "level": "ok", "advice": "Bloqueada."}
-    remove, block = f"`{FW_CMD} --remove {path}`", f"`{FW_CMD} --blockapp {path}`"
+    remove, block = f"`{FW_CMD} --remove {shlex.quote(path)}`", f"`{FW_CMD} --blockapp {shlex.quote(path)}`"
+    # Updating a system extension moves it to a new UUID folder; the rule keeps pointing at the old one.
+    moved = path.endswith(".systemextension") and next(
+        (m.group(0) for p in running if (m := re.match(r".+?\.systemextension", p)) and m.group(0) != path
+         and Path(m.group(0)).name == Path(path).name), None)
+    if moved:
+        return {**app, "level": "warn", "advice": "Regla vieja: se actualizó y ahora corre desde otra carpeta, sin regla.",
+                "fix": f"{remove}. Si recibes conexiones por ella (Taildrop, por ejemplo), agrega la nueva: `{FW_CMD} --add {shlex.quote(moved)}`."}
     if base in FW_INTERPRETERS:
         return {**app, "what": f"Intérprete de {base}", "level": "warn", "fix": block,
                 "advice": f"Cualquier script de {base} puede recibir conexiones de la red. Bloquéala salvo que sirvas algo a otros "
@@ -512,7 +526,6 @@ def firewall(open_ports, ports):
                   level="info" if block_all and trusted is not False else None),
     ]
     rules = fw_rules()
-    apps = sorted((fw_app(path, ok, ports, sign) for path, ok in rules), key=lambda a: (LEVELS[a["level"]], a["name"]))
 
     def reach(path):
         if not enabled:
@@ -538,8 +551,21 @@ def firewall(open_ports, ports):
         e["path"] = exe_path(min(e.pop("pids")))
         e["reachable"], e["why"] = reach(e["path"])
         e["ports"] = sorted(e["ports"])
+        e["what"], e["fix"] = exposed_fix(e)
     exposed = sorted(exposed.values(), key=lambda e: (not e["reachable"], -len(e["ports"])))
+    running = [e["path"] for e in exposed if e["path"]]
+    apps = sorted((fw_app(path, ok, ports, sign, running) for path, ok in rules), key=lambda a: (LEVELS[a["level"]], a["name"]))
     return {"enabled": enabled, "stealth": stealth, "trusted_network": trusted, "options": options, "apps": apps}, exposed
+
+
+def exposed_fix(e):
+    if e["process"] in DOCKER_PROCS:
+        return "Puertos de Docker", "Publícalos como 127.0.0.1:puerto:puerto; el chequeo «Puertos de Docker» lista cuáles."
+    what, how = EXPOSED_KNOWN.get(e["process"], (None, "Si no le sirve nada a otros equipos, bloquéalo; "
+                                                        "si es un servidor de desarrollo, haz que escuche en 127.0.0.1."))
+    if not e["reachable"] or not e["path"]:
+        return what, how
+    return what, f"{how} El comando lo bloquea en el firewall: `{FW_CMD} --blockapp {shlex.quote(e['path'])}`"
 
 
 def pending_updates():
@@ -631,7 +657,7 @@ def posture(open_ports, all_ports):
     n_ports = len({p for _, p, _, _ in open_ports})
     checks.append(check("exposed", "Abierto a la red", "ok" if not reachable else "warn" if fw["enabled"] else "bad",
                         f"{n_ports} puertos de {len(exposed)} procesos · {len(reachable)} alcanzables" if exposed else "nada, solo localhost",
-                        "Publica los puertos de Docker como 127.0.0.1:puerto:puerto y cierra lo que no uses."))
+                        " ".join(f"{e['what'] or e['process']} ({', '.join(map(str, e['ports']))}): {e['fix']}" for e in reachable)))
     return checks, exposed, fw
 
 
@@ -1002,6 +1028,9 @@ CONN_LOCK = threading.Lock()
 OUTBOUND_FILE = BASE / "outbound-baseline.json"
 OUTBOUND = {"since": None, "seen": {}}
 TAILSCALE_NET = ipaddress.ip_network("100.64.0.0/10")
+# Folders under SIP: only Apple can write there, so a new Apple daemon going online is not news.
+SIP_DIRS = ("/System/", "/usr/libexec/", "/usr/sbin/", "/usr/bin/", "/bin/", "/sbin/")
+VERSION_SEG = re.compile(r"/(?=[^/]*\d)(?:v?\d+(?:\.\d+)+[\w.+-]*|[0-9a-f]{8,}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?=/|$)", re.I)
 SUSPECT_DIRS = ("/tmp/", "/private/tmp/", "/private/var/tmp/", "/Users/Shared/", str(HOME / "Downloads") + "/")
 DOWNLOADERS = {"curl", "wget", "nc", "ncat", "socat", "osascript", "base64"}
 SIG_POOL, DNS_POOL = ThreadPoolExecutor(2), ThreadPoolExecutor(4)
@@ -1064,11 +1093,21 @@ def host_name(ip):
     return _ptr[ip] or ip
 
 
+def baseline_key(path):
+    # Updates install into versioned folders (Cellar/php/8.5.11, claude-code/2.1.321/<hash>); one key per program, not per version.
+    return VERSION_SEG.sub("/*", path)
+
+
 def conn_sampler():
     try:
         OUTBOUND.update(json.loads(OUTBOUND_FILE.read_text()))
     except (OSError, ValueError):
         OUTBOUND.update(since=time.time(), seen={})
+    seen = {}
+    for path, t in OUTBOUND["seen"].items():
+        key = baseline_key(path)
+        seen[key] = min(t, seen.get(key, t))
+    OUTBOUND["seen"] = seen
     while True:
         now, dirty = time.time(), False
         with CONN_LOCK:
@@ -1076,8 +1115,8 @@ def conn_sampler():
                 path = owner(pid, proc)
                 entry = CONNS.setdefault((path, ip, port), [now, now, 0])
                 entry[1], entry[2] = now, entry[2] + 1
-                if path not in OUTBOUND["seen"]:
-                    OUTBOUND["seen"][path], dirty = now, True
+                if baseline_key(path) not in OUTBOUND["seen"]:
+                    OUTBOUND["seen"][baseline_key(path)], dirty = now, True
             for key in [k for k, e in CONNS.items() if now - e[1] > CONN_WINDOW]:
                 del CONNS[key]
         if dirty:
@@ -1099,7 +1138,7 @@ def outbound():
     rows = []
     for path, p in by.items():
         sig = cached_signature(path) if path.startswith("/") else {"signed": False}
-        seen = OUTBOUND["seen"].get(path, now)
+        seen = OUTBOUND["seen"].get(baseline_key(path), now)
         new = seen - (OUTBOUND["since"] or now) > LEARN_FOR and now - seen < NEW_FOR
         managed = path.startswith(PKG_DIRS)
         if sig is None:
@@ -1111,7 +1150,8 @@ def outbound():
             lvl, note = "bad", "firma inválida"
         else:
             lvl, note = "ok", sig.get("signer") or "firmado"
-        if new and lvl in ("ok", "info"):
+        system = (sig or {}).get("signer") == "Apple" and path.startswith(SIP_DIRS) and Path(path).name not in DOWNLOADERS | FW_INTERPRETERS
+        if new and lvl in ("ok", "info") and not system:
             lvl = "warn"
         hosts = list(dict.fromkeys(host_name(ip) + ("" if port in (80, 443) else f":{port}") for (ip, port), _ in p["dests"].most_common(8)))
         rows.append({"name": re.sub(r"\.(app|systemextension)$", "", Path(path).name), "path": path, "level": lvl, "note": note, "new": new,
@@ -1314,6 +1354,23 @@ def set_status(finding_id, status, note=""):
     return state
 
 
+def set_ack(key, fp):
+    if not isinstance(key, str) or not 0 < len(key) <= 2000 or not (fp is None or isinstance(fp, str)):
+        return 400, {"error": "clave inválida"}
+    state = load_state()
+    acks = state.setdefault("security_ack", {})
+    if fp is None:
+        acks.pop(key, None)
+    else:
+        acks[key] = {"fp": fp, "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        if key.startswith("conn:"):
+            with CONN_LOCK:
+                OUTBOUND["seen"][baseline_key(key[5:])] = OUTBOUND["since"] or time.time()
+                OUTBOUND_FILE.write_text(json.dumps(OUTBOUND, indent=1))
+    STATE.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+    return 200, state
+
+
 def list_reports():
     out = []
     for p in sorted(REPORTS.glob("*.json"), reverse=True):
@@ -1474,6 +1531,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, security_state(force=True))
         if self.path == "/api/security/scan":
             return self.send(*start_malware_scan())
+        if self.path == "/api/security/ack":
+            return self.send(*set_ack(body.get("key"), body.get("fp")))
         if self.path == "/api/security/launch":
             return self.send(*set_launch(body.get("path"), bool(body.get("enabled"))))
         if self.path == "/api/analyze":

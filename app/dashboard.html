@@ -102,7 +102,9 @@ code { font: 12px var(--mono); }
 .table { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; flex: none; }
 .tr { border-top: 1px solid var(--border); }
 .tr.resolved { opacity: .5; }
-.trow { display: grid; grid-template-columns: 80px minmax(0, 1fr) 110px 110px 170px; gap: 12px; padding: 12px 14px; align-items: center; }
+.sec.ack { background: none; color: var(--muted); font-weight: 500; padding: 5px 6px; }
+.sec.ack:hover { color: var(--text); }
+.trow { display: grid; grid-template-columns: 80px minmax(0, 1fr) 110px 110px 210px; gap: 12px; padding: 12px 14px; align-items: center; }
 .tr:hover { background: var(--panel); }
 .trow.head { padding: 8px 14px; background: var(--panel); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--faint); }
 .trow .ar { font-size: 12px; color: var(--muted); }
@@ -116,7 +118,7 @@ code { font: 12px var(--mono); }
 .trow .imp.lv-warn { color: var(--warn); } .trow .imp.lv-bad { color: var(--bad); } .trow .imp.lv-info { color: var(--muted); }
 .trow .rk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); min-width: 0; }
 .trow .rk i { width: 7px; height: 7px; border-radius: 50%; flex: none; }
-.trow .acts { display: flex; gap: 6px; justify-content: flex-end; align-items: center; }
+.trow .acts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; align-items: center; }
 .xp { padding: 0 14px 14px 106px; display: grid; gap: 8px; }
 .xp .xd { font-size: 13px; color: var(--muted); text-wrap: pretty; white-space: pre-line; }
 .xp .xn { font-size: 12px; color: var(--muted); }
@@ -613,7 +615,9 @@ async function setTrusted(trusted) {
 }
 
 let security = null, malware = null, conns = null, secTimer = null, malwareTimer = null;
-let secActs = new Map();
+let secActs = new Map(), showReviewed = false, connTimer = null;
+const ackFp = a => `${a.lvl}|${a.sub}`;
+const isAcked = a => state.security_ack?.[a.key]?.fp === ackFp(a);
 const SEC_RANK = { ok: 0, info: 1, warn: 2, bad: 3 };
 const flagged = l => l === "warn" || l === "bad";
 const worstSec = ls => ls.reduce((a, b) => SEC_RANK[b] > SEC_RANK[a] ? b : a, "ok");
@@ -650,6 +654,12 @@ function buildSecActions() {
   for (const c of r.checks.filter(c => flagged(c.level))) {
     // With the firewall on, its options and rules get one row each below, each with its own command.
     if (c.id === "firewall" && fw.enabled) continue;
+    if (c.id === "exposed") {
+      for (const e of r.exposed.filter(e => e.reachable))
+        acts.push({ key: `exposed:${e.process}`, lvl: c.level, areaId: "red", area: "Red", title: `${e.what || e.process} abierto a la red`,
+          sub: `${plural(e.ports.length, "puerto", "puertos")}: ${e.ports.join(", ")} · ${e.why}`, detail: `${e.fix}\n${tilde(e.path || "")}`, ...fixAction(e.fix) });
+      continue;
+    }
     acts.push({ key: c.id, lvl: c.level, areaId: NET_CHECKS.has(c.id) ? "red" : "sis", area: CHECK_AREA[c.id] || "Sistema",
       title: c.label, sub: firstUpper(c.value), detail: c.fix, ...fixAction(c.fix, SETTINGS_PANE[c.id]) });
   }
@@ -788,7 +798,7 @@ function secModule(id, a) {
 }
 
 function secRow(a) {
-  const k = `s:${a.key}`, open = expanded.has(k);
+  const k = `s:${a.key}`, open = expanded.has(k), acked = isAcked(a);
   const btn = a.kind === "open" ? `<a class="btn sec ${a.lvl}" href="${esc(a.url)}">${a.btn}</a>`
     : `<button class="sec ${a.lvl}" data-sact="${esc(a.key)}" ${a.busy ? "disabled" : ""}>${a.btn}</button>`;
   const text = (a.cmd ? (a.detail || "").replace(/`[^`]+`\.?/, "") : a.detail || "").trim();
@@ -797,17 +807,19 @@ function secRow(a) {
   const xp = open ? `<div class="xp">${text ? `<div class="xd">${esc(text)}</div>` : ""}
     ${a.cmd ? `<div class="xn">${note}</div><div class="cmd"><code>${esc(a.cmd)}</code><span class="acts"><button class="sec" data-copy="${esc(a.cmd)}">Copiar</button></span></div>`
       : a.kind === "launch" ? `<div class="xn">${note}</div>` : ""}</div>` : "";
-  return `<div class="tr ${open ? "open" : ""}"><div class="trow">
+  const ack = acked ? `<button class="sec ack" data-unack="${esc(a.key)}" title="Volver a mostrarlo entre las acciones">Revisado · deshacer</button>`
+    : `<button class="sec ack" data-ack="${esc(a.key)}" title="Ocultarlo hasta que cambie">✓ Revisado</button>`;
+  return `<div class="tr ${open ? "open" : ""} ${acked ? "resolved" : ""}"><div class="trow">
     <span class="ar">${esc(a.area)}</span>
     <div class="ti" data-expand="${esc(k)}" role="button" tabindex="0" aria-expanded="${open}"><b>${esc(a.title)}</b><span title="${esc(a.sub)}">${esc(a.sub)}</span></div>
     <span class="imp lv-${a.lvl}">${SEC_LEVEL_TXT[a.lvl]}</span>
     <span class="rk"><i style="background:${dotColor(a.lvl === "info" ? "info" : a.lvl)}"></i>${esc(a.where)}</span>
-    <div class="acts">${btn}</div></div>${xp}</div>`;
+    <div class="acts">${acked ? "" : btn}${ack}</div></div>${xp}</div>`;
 }
 
 function renderSecurity() {
-  const acts = buildSecActions();
-  secActs = new Map(acts.map(a => [a.key, a]));
+  const all = buildSecActions(), acts = all.filter(a => !isAcked(a)), reviewed = all.filter(isAcked);
+  secActs = new Map(all.map(a => [a.key, a]));
   const counts = { bad: 0, warn: 0, info: 0 };
   acts.forEach(a => counts[a.lvl]++);
   const lvl = counts.bad ? "bad" : counts.warn ? "warn" : "ok";
@@ -829,8 +841,10 @@ function renderSecurity() {
     ? `<span class="badge b-${lvl}">${SEC_LABEL[lvl]}</span><p>${parts.length ? `${firstUpper(parts.join(", ").replace(/, ([^,]+)$/, " y $1"))}.` : "Todo en orden."}${okTxt}</p>`
     : `<p class="empty">${security?.status === "error" ? "No se pudo revisar la seguridad." : "Revisando…"}</p>`;
   const head = `<div class="trow head"><span>Área</span><span>Hallazgo</span><span style="text-align:right">Nivel</span><span>Se arregla en</span><span></span></div>`;
+  const revBtn = reviewed.length ? ` · <button class="link" id="toggleReviewed">${showReviewed ? "Ocultar" : "Ver"} ${plural(reviewed.length, "revisado", "revisados")}</button>` : "";
   $("secFindings").innerHTML = head + (acts.length ? acts.map(secRow).join("") : `<div class="tempty empty">${security?.result ? "Nada que revisar." : "Revisando…"}</div>`)
-    + `<div class="tfoot">Los comandos con sudo nunca se ejecutan desde el dashboard.</div>`;
+    + (showReviewed ? reviewed.map(secRow).join("") : "")
+    + `<div class="tfoot">Los comandos con sudo nunca se ejecutan desde el dashboard.${revBtn}</div>`;
   $("secRefresh").disabled = security?.status === "running";
 }
 
@@ -851,7 +865,7 @@ async function refreshSecurity() {
 async function loadConns() {
   try { conns = await (await fetch("/api/security/connections")).json(); } catch { conns = null; }
   renderSecurity();
-  setTimeout(loadConns, 60000);
+  clearTimeout(connTimer); connTimer = setTimeout(loadConns, 60000);
 }
 
 async function loadMalware() {
@@ -867,6 +881,16 @@ async function startMalware() {
   const r = await post("/api/security/scan");
   if (!r.ok) return toast((await r.json()).error);
   malware = await r.json(); loadMalware();
+}
+
+async function setAck(key, on) {
+  const a = secActs.get(key);
+  const r = await post("/api/security/ack", { key, fp: on ? ackFp(a) : null });
+  const body = await r.json();
+  if (!r.ok) return toast(body.error);
+  state = body;
+  if (on && key.startsWith("conn:")) return loadConns().then(() => toast("Revisado: queda en la base de conexiones conocidas"));
+  renderSecurity(); toast(on ? "Revisado: vuelve a aparecer si cambia" : "Vuelve a las acciones");
 }
 
 async function disableLaunch(a) {
@@ -1082,6 +1106,9 @@ document.addEventListener("click", async e => {
   else if (t.dataset.win) { win = t.dataset.win; try { localStorage.setItem("mo.window", win); } catch {} renderWin(); loadHistory(); }
   else if (t.dataset.copy) copy(t.dataset.copy);
   else if (t.dataset.sact) onSecAction(secActs.get(t.dataset.sact));
+  else if (t.dataset.ack) setAck(t.dataset.ack, true);
+  else if (t.dataset.unack) setAck(t.dataset.unack, false);
+  else if (t.id === "toggleReviewed") { showReviewed = !showReviewed; renderSecurity(); }
   else if (t.dataset.run) runFinding(report.findings.find(f => f.id === t.dataset.run));
   else if (t.dataset.openJob) openJob(t.dataset.openJob);
   else if (t.dataset.set) setStatus(t.dataset.id, t.dataset.set);
