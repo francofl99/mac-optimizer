@@ -1,6 +1,6 @@
 ---
 name: repaso-sistema
-description: Repaso del Mac (procesos, RAM, CPU, disco, batería, Docker, repos git, arranque) con recomendaciones de optimización y dashboard local (mac-optimizer). Usar cuando el usuario pida "repaso del sistema", "qué puedo optimizar", "/repaso-sistema", "abrir el dashboard del repaso", o cuando lo dispare la rutina programada.
+description: Repaso del Mac (procesos, RAM, CPU, disco, batería, Docker, repos git, caches de Rust, arranque) con recomendaciones de optimización y dashboard local (mac-optimizer). Usar cuando el usuario pida "repaso del sistema", "qué puedo optimizar", "/repaso-sistema", "abrir el dashboard del repaso", o cuando lo dispare la rutina programada.
 ---
 
 # Repaso del sistema (mac-optimizer)
@@ -13,6 +13,7 @@ Solo diagnóstico. Nunca borrar archivos, matar procesos, desinstalar ni cambiar
   - `reports/<stamp>.json`: reportes.
   - `docker/summary.json` y `docker/volumes-*.txt`: clasificación de Docker.
   - `git/summary.json` y `git/*.tsv`: clasificación de branches, worktrees y mantenimiento de los repos.
+  - `cargo/summary.json` y `cargo/targets.tsv`: carpetas `target/` de Rust/Cargo (Tauri incluido).
   - `state.json`: lo que el usuario marcó en el dashboard.
   - `exec.log`: acciones ejecutadas.
   - `protected-volumes.txt`, `branch-volumes.txt` y `protected-branches.txt`: patrones del usuario.
@@ -20,7 +21,7 @@ Solo diagnóstico. Nunca borrar archivos, matar procesos, desinstalar ni cambiar
 ## Pasos
 
 1. Ejecutar `bash ~/.mac-optimizer/repo/bin/collect.sh` en background (tarda unos 3-4 min). Imprime la ruta del snapshot. En modo headless este paso ya viene hecho.
-2. Leer el snapshot completo, `docker/summary.json` y `git/summary.json`.
+2. Leer el snapshot completo, `docker/summary.json`, `git/summary.json` y `cargo/summary.json`.
 3. Si hay reportes previos en `reports/`, leer el más reciente y comparar (crecimiento de disco, swap, procesos nuevos, ciclos de batería) → campo `changes`.
 4. Leer `state.json` y `exec.log`:
    - Los hallazgos con `status: "ignored"` no se vuelven a sugerir.
@@ -65,7 +66,7 @@ El `risk` define la confirmación: con `bajo` alcanza un clic; con `medio` o `al
 
 - **RAM**: memory pressure, swap > 2 GB, apps con muchos helpers (Electron, navegadores), contenedores Docker corriendo hace días, procesos huérfanos.
 - **CPU / batería**: energy impact alto sostenido, assertions que impiden el reposo, servicios nativos (mysqld, postgres) que duplican los de Docker, salud de la batería y hábitos de carga.
-- **Disco**: Docker, caches regenerables, node_modules inactivos, restos de apps desinstaladas, Downloads, papelera.
+- **Disco**: Docker, caches regenerables, node_modules inactivos, `target/` de Rust, restos de apps desinstaladas, Downloads, papelera.
 - **Git**: branches inactivas, worktrees olvidados, repos sin fetch. Ver reglas abajo.
 - **Arranque**: LaunchAgents/Daemons de apps que ya no están en /Applications.
 - Distinguir cache regenerable (riesgo bajo) de datos de usuario (riesgo medio/alto).
@@ -78,6 +79,16 @@ El `risk` define la confirmación: con `bajo` alcanza un clic; con `medio` o `al
 - `volumes-protected.txt` y los volúmenes en uso no se tocan nunca. El clasificador ya aplica los patrones del usuario y detecta archivos de bases de datos.
 - Imágenes: `docker image prune -a -f --filter until=720h` respeta las que usa cualquier contenedor. Listar las que son `local_build` en `summary.json`, porque habría que reconstruirlas.
 - Build cache: `docker builder prune -a -f`.
+
+### Rust / Cargo: reglas duras
+
+`bin/cargo_targets.py` encuentra las carpetas `target/` que creó Cargo (las identifica por su `CACHEDIR.TAG`, no por el nombre). Nunca sugerir `cargo clean` ni `rm -rf target`: en proyectos Tauri borra el `.app` de `target/release/bundle` que abre la app.
+
+- Un solo hallazgo, `id: "cargo-target-cache"`, `area: "disk"`, riesgo bajo, solo si `targets.tsv` tiene elementos. `savings_gb` = `reclaim_gb`.
+- `command`: `python3 ~/.mac-optimizer/repo/bin/cargo_targets.py clean ~/.mac-optimizer/cargo/targets.tsv`
+- Borra solo la caché de compilación de cada perfil (`deps`, `build`, `.fingerprint`, `incremental`, `examples`) y deja binarios y bundles. Omite los targets donde cargo está compilando.
+- En `detail`: los 3-5 proyectos con más `cache_gb`, los días desde el último build, y que el próximo `cargo build` / `tauri build` de esos proyectos va a tardar unos minutos más. Si un proyecto tiene `bundles`, aclarar que se mantienen.
+- `~/.cargo/registry` y `~/.rustup/toolchains` solo se informan (aparecen en DISK); no sugerir borrarlos.
 
 ### Git: reglas duras
 

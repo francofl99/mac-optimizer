@@ -18,6 +18,9 @@ DOCKER_PID=$!
 GIT_REPOS="$(mktemp)"
 MAC_OPTIMIZER_PROJECT_DIRS="${PROJECT_DIRS[*]}" python3 "$HERE/git_repos.py" > "$GIT_REPOS" 2>&1 &
 GIT_PID=$!
+CARGO="$(mktemp)"
+MAC_OPTIMIZER_PROJECT_DIRS="${PROJECT_DIRS[*]}" python3 "$HERE/cargo_targets.py" > "$CARGO" 2>&1 &
+CARGO_PID=$!
 
 {
 section "SYSTEM"
@@ -78,6 +81,8 @@ for p in \
   "$HOME/.gradle" \
   "$HOME/.m2" \
   "$HOME/.composer" \
+  "$HOME/.cargo/registry" \
+  "$HOME/.rustup/toolchains" \
   "$HOME/Library/Group Containers/HUAQ24HBR6.dev.orbstack"; do
   size_of "$p"
 done | sort -rn
@@ -94,9 +99,12 @@ section "STALE node_modules in ${PROJECT_DIRS[*]} (untouched >60d)"
 find "${PROJECT_DIRS[@]}" -maxdepth 5 -type d -name node_modules -prune -mtime +60 2>/dev/null \
   | while read -r d; do size_of "$d"; done | sort -rn | head -15
 
+section "RUST / CARGO target/ in ${PROJECT_DIRS[*]}"
+wait "$CARGO_PID" 2>/dev/null; cat "$CARGO"
+
 section "FILES > 500MB (Downloads, Documents, Movies, project dirs)"
 find "$HOME/Downloads" "$HOME/Documents" "$HOME/Movies" "${PROJECT_DIRS[@]}" -xdev \
-  \( -name node_modules -o -name .git -o -name vendor \) -prune -o -type f -size +500M -print 2>/dev/null \
+  \( -name node_modules -o -name .git -o -name vendor -o -name target \) -prune -o -type f -size +500M -print 2>/dev/null \
   | while read -r f; do size_of "$f"; done | sort -rn | head -15
 
 section "DOCKER"
@@ -137,6 +145,6 @@ echo "Total processes: $(ps -A | wc -l | tr -d ' ')"
 echo "Helper/Renderer procs: $(ps -Axo comm= | grep -ciE 'helper|renderer')"
 section "DONE"
 } > "$OUT" 2>&1
-rm -f "$DOCKER_DF" "$GIT_REPOS"
+rm -f "$DOCKER_DF" "$GIT_REPOS" "$CARGO"
 
 echo "$OUT"
