@@ -18,7 +18,7 @@ while [ $# -gt 0 ]; do
 done
 case "$SCHEDULE" in keep|off|daily|weekly) ;; *) echo "--schedule debe ser off, daily o weekly"; exit 1 ;; esac
 
-mkdir -p "$DATA"/{runs,reports,docker,git,logs,backup} "$AGENTS"
+mkdir -p "$DATA"/{runs,reports,docker,git,cargo,logs,backup} "$AGENTS"
 # Snapshots list processes, paths and project names: keep them private to the user.
 chmod 700 "$DATA"
 ln -sfn "$REPO" "$DATA/repo"
