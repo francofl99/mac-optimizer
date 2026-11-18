@@ -485,6 +485,8 @@ def fw_app(path, allowed, ports, sign, running):
     if not Path(path).exists():
         return {**app, "level": "warn", "fix": remove, "advice": "El programa ya no existe: la regla sobra."}
     sig = sign(path)
+    if sig.get("added"):
+        return {**app, "level": "info", "advice": f"Firmada por {sig['signer'] or 'su desarrollador'}, pero escribe archivos dentro de su paquete y eso rompe el sello. Déjala solo si otros equipos se conectan a ella."}
     if not sig["signed"] or not sig["valid"]:
         return {**app, "level": "warn", "fix": block, "advice": "Sin firma válida: confirma que la reconoces antes de dejarla pasar."}
     return {**app, "level": "info", "advice": f"Firmada por {sig['signer'] or 'su desarrollador'}. Déjala solo si otros equipos se conectan a ella."}
@@ -679,10 +681,34 @@ def signature(path):
     if "Signature=adhoc" in out:
         return {"signed": True, "valid": True, "signer": None, "adhoc": True}
     auth = re.search(r"Authority=(.+)", out)
-    valid = subprocess.run(["codesign", "--verify", path], capture_output=True, timeout=60).returncode == 0
+    check = subprocess.run(["codesign", "--verify", "-vvvv", path], capture_output=True, text=True, timeout=60)
     who = auth.group(1) if auth else None
     who = "Apple" if who in ("Software Signing", "macOS Software Signing") else re.sub(r"^Developer ID Application: (.+?)(?: \(\w+\))?$", r"\1", who or "") or None
-    return {"signed": True, "valid": valid, "signer": who}
+    sig = {"signed": True, "valid": check.returncode == 0, "signer": who}
+    added = cache_writes(check.stdout + check.stderr) if check.returncode else 0
+    if added:
+        sig["added"] = added
+    return sig
+
+
+def cache_writes(report):
+    # Some apps (Open Design's bundled Next.js server) write their cache inside their own bundle, which breaks
+    # the seal while every signed file stays intact. Anything modified, missing or executable is real damage.
+    if "a sealed resource is missing or invalid" not in report:
+        return 0
+    changes = re.findall(r"^file (\w+): (.+)$", report, re.M)
+    if not changes or any(kind != "added" for kind, _ in changes):
+        return 0
+    try:
+        if any(os.stat(f).st_mode & 0o111 for _, f in changes):
+            return 0
+    except OSError:
+        return 0
+    return len(changes)
+
+
+def seal_note(sig):
+    return f"{sig['signer'] or 'firmado'}, sello roto por {sig['added']} archivos que la app escribió en su paquete (binarios intactos)"
 
 
 def launch_overrides():
@@ -731,9 +757,9 @@ def launch_items():
             else:
                 sig = signature(prog)
                 item.update(sig)
-                item["level"] = ("warn" if not sig["signed"] else "bad" if not sig["valid"] else "warn" if item["new"]
-                                 else "info" if sig.get("adhoc") else "ok")
-                item["note"] = ("sin firmar" if not sig["signed"] else "firma inválida" if not sig["valid"]
+                item["level"] = ("warn" if not sig["signed"] else "bad" if not sig["valid"] and not sig.get("added") else "warn" if item["new"]
+                                 else "info" if sig.get("adhoc") or sig.get("added") else "ok")
+                item["note"] = ("sin firmar" if not sig["signed"] else seal_note(sig) if sig.get("added") else "firma inválida" if not sig["valid"]
                                 else "firma ad-hoc, sin identidad" if sig.get("adhoc") else sig["signer"] or "firmado")
             items.append(item)
     BASELINE_FILE.write_text(json.dumps(baseline, indent=1))
@@ -1169,6 +1195,8 @@ def outbound():
         elif not sig.get("signed") or sig.get("adhoc"):
             what = "firma ad-hoc" if sig.get("adhoc") else "sin firmar"
             lvl, note = ("info", f"{what}, instalado con un gestor de paquetes") if managed else ("warn", what)
+        elif sig.get("added"):
+            lvl, note = "info", seal_note(sig)
         elif not sig.get("valid"):
             lvl, note = "bad", "firma inválida"
         else:
