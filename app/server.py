@@ -1034,7 +1034,7 @@ VERSION_SEG = re.compile(r"/(?=[^/]*\d)(?:v?\d+(?:\.\d+)+[\w.+-]*|[0-9a-f]{8,}|[
 SUSPECT_DIRS = ("/tmp/", "/private/tmp/", "/private/var/tmp/", "/Users/Shared/", str(HOME / "Downloads") + "/")
 DOWNLOADERS = {"curl", "wget", "nc", "ncat", "socat", "osascript", "base64"}
 SIG_POOL, DNS_POOL = ThreadPoolExecutor(2), ThreadPoolExecutor(4)
-_pids, _sigs, _ptr = {}, {}, {}
+_pids, _sigs, _ptr, _names = {}, {}, {}, {}
 
 
 def established():
@@ -1047,17 +1047,34 @@ def established():
         except ValueError:
             continue
         if not (ip.is_loopback or ip.is_link_local or ip.is_unspecified):
-            yield str(ip), int(m.group(2)), m.group(3), int(m.group(4))
+            yield str(ip), int(m.group(2)), m.group(3).strip(), int(m.group(4))
+
+
+def app_of(path):
+    # Group helpers under their app: "Brave Browser.app/…/Helper.app/…" counts as Brave Browser.
+    app = re.match(r"(.+?\.(?:app|systemextension))/", path)
+    return app.group(1) if app else path
+
+
+def learn_names():
+    # netstat prints the kernel's 16-char process name; remember which executable each name belongs to
+    # so a short-lived process (Open Design's vela) still maps to its app after it exits.
+    for line in sh(["ps", "-axww", "-o", "comm="]).splitlines():
+        comm = line.strip()
+        if comm.startswith("/"):
+            _names[Path(comm).name[:16]] = app_of(comm)
 
 
 def owner(pid, proc):
     hit = _pids.get(pid)
-    if not hit or hit[0] != proc:
-        path = exe_path(pid) or proc
-        # Group helpers under their app: "Brave Browser.app/…/Helper.app/…" counts as Brave Browser.
-        app = re.match(r"(.+?\.(?:app|systemextension))/", path)
-        hit = _pids[pid] = (proc, app.group(1) if app else path)
-    return hit[1]
+    if hit and hit[0] == proc:
+        return hit[1]
+    path = exe_path(pid)
+    if not path:
+        return _names.get(proc[:16], proc)
+    _pids[pid] = (proc, app_of(path))
+    _names[proc[:16]] = _pids[pid][1]
+    return _pids[pid][1]
 
 
 def cached_signature(path):
@@ -1110,6 +1127,7 @@ def conn_sampler():
     OUTBOUND["seen"] = seen
     while True:
         now, dirty = time.time(), False
+        learn_names()
         with CONN_LOCK:
             for ip, port, proc, pid in established():
                 path = owner(pid, proc)
@@ -1137,12 +1155,17 @@ def outbound():
         p["last"] = max(p["last"], last)
     rows = []
     for path, p in by.items():
-        sig = cached_signature(path) if path.startswith("/") else {"signed": False}
+        located = path.startswith("/")
+        sig = cached_signature(path) if located else None
         seen = OUTBOUND["seen"].get(baseline_key(path), now)
         new = seen - (OUTBOUND["since"] or now) > LEARN_FOR and now - seen < NEW_FOR
         managed = path.startswith(PKG_DIRS)
-        if sig is None:
+        if not located:
+            lvl, note = "info", "terminó antes de poder ubicar su ejecutable"
+        elif sig is None:
             lvl, note = "info", "verificando firma…"
+        elif sig.get("missing"):
+            lvl, note = "info", "su ejecutable ya no está en el disco"
         elif not sig.get("signed") or sig.get("adhoc"):
             what = "firma ad-hoc" if sig.get("adhoc") else "sin firmar"
             lvl, note = ("info", f"{what}, instalado con un gestor de paquetes") if managed else ("warn", what)
@@ -1154,7 +1177,7 @@ def outbound():
         if new and lvl in ("ok", "info") and not system:
             lvl = "warn"
         hosts = list(dict.fromkeys(host_name(ip) + ("" if port in (80, 443) else f":{port}") for (ip, port), _ in p["dests"].most_common(8)))
-        rows.append({"name": re.sub(r"\.(app|systemextension)$", "", Path(path).name), "path": path, "level": lvl, "note": note, "new": new,
+        rows.append({"name": re.sub(r"\.(app|systemextension)$", "", Path(path).name) or "proceso sin nombre", "path": path, "level": lvl, "note": note, "new": new,
                      "hosts": hosts[:5], "destinations": len(p["dests"]), "active": now - p["last"] < CONN_EVERY * 2,
                      "last": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(p["last"]))})
     rows.sort(key=lambda r: (LEVELS[r["level"]], not r["active"], -r["destinations"]))
