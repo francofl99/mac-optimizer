@@ -5,7 +5,7 @@
 A periodic health check for your Mac (RAM, swap, CPU, battery, disk, Docker, git repos and login items) with a local dashboard. [Claude Code](https://claude.com/claude-code) analyzes the data and suggests actions. You review each one and run it with a button, after confirming.
 
 > [!WARNING]
-> Some suggested actions delete data (caches, Docker images or volumes, `node_modules`, Rust `target/` caches, git branches and worktrees). Nothing runs without your confirmation, but you are responsible for what you approve. Read every command before running it. Provided as is, with no warranty (see [LICENSE](LICENSE)).
+> Some suggested actions delete data (caches, Docker images or volumes, `node_modules`, Rust `target/` caches, git branches and worktrees, [benv](https://github.com/francofl99/benv) instances). Nothing runs without your confirmation, but you are responsible for what you approve. Read every command before running it. Provided as is, with no warranty (see [LICENSE](LICENSE)).
 
 ## How it works
 
@@ -25,6 +25,7 @@ state.json / exec.log ◄──────────────────�
 | `bin/git_repos.py` | Classifies local git branches and worktrees by risk, offline. It never suggests branches in use, protected, with unpushed commits or that only exist locally | No |
 | `bin/git_cleanup.py` | Applies those lists from the dashboard. It skips branches that changed since the scan and saves a script to restore the deleted ones | No |
 | `bin/cargo_targets.py` | Finds Rust/Cargo `target/` dirs and, from the dashboard, deletes only their compile cache. Built apps and bundles (Tauri `.app`) stay | No |
+| `bin/benv_instances.py` | Lists benv instances (size, running containers, days idle) and removes the ones you pick in the dashboard with `benv rm`. Never touches instances with uncommitted changes or unpushed commits | No |
 | `bin/analyze.sh` | `collect.sh` + headless `claude -p`. Claude can only read files and write to `reports/` | Yes |
 | `app/server.py` + `app/dashboard.html` | Dashboard on `localhost:8765`: live metrics, findings, Run button, concurrent jobs, history, security checks | No |
 
@@ -108,6 +109,7 @@ Environment variables:
 - `MAC_OPTIMIZER_CARGO_MIN_GB`: minimum `target/` cache size to suggest cleaning it. Default: `0.5`.
 - `MAC_OPTIMIZER_PROJECT_DIRS`: where to look for stale `node_modules`, Rust `target/` dirs and git repos. Default: `~/Projects ~/Desktop ~/code`.
 - `MAC_OPTIMIZER_BRANCH_DAYS`: days without commits, changes or checkouts before a branch or worktree counts as inactive. Default: 30.
+- `MAC_OPTIMIZER_BENV_DAYS`: days without commits or checkouts before a benv instance is pre-selected for removal. Default: 14.
 - `MAC_OPTIMIZER_MODEL`: model for headless analysis.
 
 ## Security checks

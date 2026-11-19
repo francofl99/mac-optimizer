@@ -1,6 +1,6 @@
 ---
 name: repaso-sistema
-description: Repaso del Mac (procesos, RAM, CPU, disco, batería, Docker, repos git, caches de Rust, arranque) con recomendaciones de optimización y dashboard local (mac-optimizer). Usar cuando el usuario pida "repaso del sistema", "qué puedo optimizar", "/repaso-sistema", "abrir el dashboard del repaso", o cuando lo dispare la rutina programada.
+description: Repaso del Mac (procesos, RAM, CPU, disco, batería, Docker, repos git, caches de Rust, instancias de benv, arranque) con recomendaciones de optimización y dashboard local (mac-optimizer). Usar cuando el usuario pida "repaso del sistema", "qué puedo optimizar", "/repaso-sistema", "abrir el dashboard del repaso", o cuando lo dispare la rutina programada.
 ---
 
 # Repaso del sistema (mac-optimizer)
@@ -14,6 +14,7 @@ Solo diagnóstico. Nunca borrar archivos, matar procesos, desinstalar ni cambiar
   - `docker/summary.json` y `docker/volumes-*.txt`: clasificación de Docker.
   - `git/summary.json` y `git/*.tsv`: clasificación de branches, worktrees y mantenimiento de los repos.
   - `cargo/summary.json` y `cargo/targets.tsv`: carpetas `target/` de Rust/Cargo (Tauri incluido).
+  - `benv/summary.json`, `benv/items.json` y `benv/instances.tsv`: instancias de benv (entornos paralelos por branch).
   - `state.json`: lo que el usuario marcó en el dashboard.
   - `exec.log`: acciones ejecutadas.
   - `protected-volumes.txt`, `branch-volumes.txt` y `protected-branches.txt`: patrones del usuario.
@@ -21,7 +22,7 @@ Solo diagnóstico. Nunca borrar archivos, matar procesos, desinstalar ni cambiar
 ## Pasos
 
 1. Ejecutar `bash ~/.mac-optimizer/repo/bin/collect.sh` en background (tarda unos 3-4 min). Imprime la ruta del snapshot. En modo headless este paso ya viene hecho.
-2. Leer el snapshot completo, `docker/summary.json`, `git/summary.json` y `cargo/summary.json`.
+2. Leer el snapshot completo, `docker/summary.json`, `git/summary.json`, `cargo/summary.json` y `benv/summary.json`.
 3. Si hay reportes previos en `reports/`, leer el más reciente y comparar (crecimiento de disco, swap, procesos nuevos, ciclos de batería) → campo `changes`.
 4. Leer `state.json` y `exec.log`:
    - Los hallazgos con `status: "ignored"` no se vuelven a sugerir.
@@ -39,7 +40,7 @@ Solo diagnóstico. Nunca borrar archivos, matar procesos, desinstalar ni cambiar
   "metrics": { "swap_used_gb": 0, "compressed_gb": 0, "mem_free_pct": 0, "disk_free_gb": 0, "load1": 0, "battery_cycles": 0, "battery_max_capacity": 0, "processes": 0 },
   "disk_breakdown": [{ "label": "...", "gb": 0, "kind": "docker|cache|app|dev|user|system" }],
   "docker": { "images_gb": 0, "images_reclaim_gb": 0, "volumes_gb": 0, "volumes_reclaim_gb": 0, "build_cache_gb": 0, "build_cache_reclaim_gb": 0, "vm_disk_gb": 0, "running": 0 },
-  "findings": [{ "id": "slug-estable", "area": "disk|ram|cpu|battery|startup|git", "title": "...", "detail": "...", "impact": "~39 GB", "savings_gb": 0, "risk": "bajo|medio|alto", "command": "..." }],
+  "findings": [{ "id": "slug-estable", "area": "disk|ram|cpu|battery|startup|git", "title": "...", "detail": "...", "impact": "~39 GB", "savings_gb": 0, "risk": "bajo|medio|alto", "command": "...", "items_file": "(opcional)" }],
   "changes": ["..."]
 }
 ```
@@ -89,6 +90,17 @@ El `risk` define la confirmación: con `bajo` alcanza un clic; con `medio` o `al
 - Borra solo la caché de compilación de cada perfil (`deps`, `build`, `.fingerprint`, `incremental`, `examples`) y deja binarios y bundles. Omite los targets donde cargo está compilando.
 - En `detail`: los 3-5 proyectos con más `cache_gb`, los días desde el último build, y que el próximo `cargo build` / `tauri build` de esos proyectos va a tardar unos minutos más. Si un proyecto tiene `bundles`, aclarar que se mantienen.
 - `~/.cargo/registry` y `~/.rustup/toolchains` solo se informan (aparecen en DISK); no sugerir borrarlos.
+
+### benv: reglas duras
+
+`bin/benv_instances.py` lee `~/.benv/*/state.json` (sin ejecutar benv) y lista cada instancia con su branch, tamaño, contenedores corriendo y días sin commits ni checkouts. También detecta carpetas huérfanas: están en `~/.benv/<proyecto>/instances/` pero benv ya no las registra.
+
+- Un solo hallazgo, `id: "benv-instances"`, `area: "disk"`, riesgo medio, siempre que `summary.json` tenga instancias (aunque ninguna esté sugerida: el usuario quiere verlas en cada repaso).
+- `command`: `python3 ~/.mac-optimizer/repo/bin/benv_instances.py rm ~/.mac-optimizer/benv/instances.tsv`
+- `items_file`: `~/.mac-optimizer/benv/items.json`. El dashboard muestra la lista con checkboxes y agrega al comando las instancias elegidas. No copiar los elementos al reporte.
+- Vienen marcadas las de `suggested`: detenidas y con `idle_days` >= `idle_days` del summary, huérfanas o con la carpeta borrada. Las que tienen `locked` (cambios sin commitear, commits sin pushear, sin `.benv.json`) se muestran pero no se pueden elegir.
+- `savings_gb` = 0: son clones APFS copy-on-write, el `gb` es tamaño aparente y lo que se libera es menos. En `impact`, la RAM de las que están corriendo (`mem_mb`) y "hasta X GB" con `total_gb`.
+- En `detail`: cuántas hay, cuántas corriendo, las sugeridas con su branch y días sin uso, y que las que tienen cambios o commits sin pushear no se tocan. Las registradas se borran con `benv rm` (para el stack y borra la carpeta, sin volúmenes); las huérfanas van a la papelera.
 
 ### Git: reglas duras
 

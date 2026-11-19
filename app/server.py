@@ -1405,6 +1405,12 @@ def set_status(finding_id, status, note=""):
     return state
 
 
+def items_done(finding_id, keys):
+    state = load_state()
+    state.setdefault("items_done", {}).setdefault(finding_id, {}).update(dict.fromkeys(keys, time.time()))
+    STATE.write_text(json.dumps(state, indent=2, ensure_ascii=False))
+
+
 def set_ack(key, fp):
     if not isinstance(key, str) or not 0 < len(key) <= 2000 or not (fp is None or isinstance(fp, str)):
         return 400, {"error": "clave inválida"}
@@ -1432,6 +1438,32 @@ def list_reports():
         except ValueError:
             continue
     return out
+
+
+def finding_items(finding):
+    """Pickable items of a finding, read from the scanner's list (items_file), never from the report itself."""
+    raw = finding.get("items_file")
+    if not raw:
+        return None
+    path = Path(os.path.expanduser(raw)).resolve()
+    if not path.is_relative_to(BASE.resolve()):
+        return []
+    try:
+        items, scanned = json.loads(path.read_text()), path.stat().st_mtime
+    except (OSError, ValueError):
+        return []
+    # A key removed before the last scan and listed again is a new instance with the same name.
+    done = {k for k, t in load_state().get("items_done", {}).get(finding["id"], {}).items() if t >= scanned}
+    return [{**i, "done": i["key"] in done} for i in items
+            if isinstance(i, dict) and re.fullmatch(r"[\w.-]+(/[\w.-]+)?", str(i.get("key", "")))]
+
+
+def with_items(report):
+    for f in report.get("findings", []):
+        items = finding_items(f)
+        if items is not None:
+            f["items"] = items
+    return report
 
 
 def runnable(finding):
@@ -1463,14 +1495,19 @@ def run_job(job):
     status = ("cancelled" if job.get("cancelled") else "needs_input" if prompted
               else "ok" if proc.returncode == 0 else "error")
     job.update(code=proc.returncode, duration=round(time.time() - start, 1), status=status)
-    if job["status"] == "ok" and job["report"]:
+    if "picked" in job:
+        removed = set(re.findall(r"^✔ (\S+?):", job["output"], re.M)) & set(job["picked"])
+        items_done(job["finding"], removed)
+        if set(job["pickable"]) <= removed:
+            set_status(job["finding"], "done", f"ejecutado desde el dashboard ({job['duration']}s)")
+    elif job["status"] == "ok" and job["report"]:
         set_status(job["finding"], "done", f"ejecutado desde el dashboard ({job['duration']}s)")
     with EXEC_LOG.open("a") as f:
         f.write(json.dumps({k: job[k] for k in ("id", "report", "finding", "command", "status", "code", "duration", "started")},
                            ensure_ascii=False) + "\n")
 
 
-def start_job(report_id, finding_id):
+def start_job(report_id, finding_id, picked=None):
     path = REPORTS / f"{report_id}.json"
     if not re.fullmatch(r"[\w-]+", report_id or "") or not path.exists():
         return 404, {"error": "reporte no encontrado"}
@@ -1481,16 +1518,26 @@ def start_job(report_id, finding_id):
     ok, why = runnable(finding)
     if not ok:
         return 400, {"error": why}
-    return launch(report_id, finding_id, finding.get("title"), finding["command"])
+    items = finding_items(finding)
+    if items is None:
+        return launch(report_id, finding_id, finding.get("title"), finding["command"])
+    pickable = [i["key"] for i in items if not i.get("locked") and not i["done"]]
+    keys = [k for k in pickable if k in set(picked or [])]
+    if not keys:
+        return 400, {"error": "Elige al menos un elemento"}
+    command = finding["command"] + "".join(f" {shlex.quote(k)}" for k in keys)
+    return launch(report_id, finding_id, finding.get("title"), command, keys, pickable)
 
 
-def launch(report_id, finding_id, title, command):
+def launch(report_id, finding_id, title, command, picked=None, pickable=None):
     with JOBS_LOCK:
         if any(j["status"] == "running" and j["finding"] == finding_id for j in JOBS.values()):
             return 409, {"error": "Esta acción ya se está ejecutando"}
         job = {"id": secrets.token_hex(6), "report": report_id, "finding": finding_id, "title": title,
                "command": command, "status": "running", "output": "", "code": None,
                "started": time.strftime("%Y-%m-%dT%H:%M:%S")}
+        if picked is not None:
+            job.update(picked=picked, pickable=pickable)
         JOBS[job["id"]] = job
     threading.Thread(target=run_job, args=(job,), daemon=True).start()
     return 200, job
@@ -1553,7 +1600,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200, JOBS[m.group(1)])
         m = re.fullmatch(r"/api/reports/([\w-]+)", path)
         if m and (REPORTS / f"{m.group(1)}.json").exists():
-            return self.send(200, (REPORTS / f"{m.group(1)}.json").read_bytes())
+            return self.send(200, with_items(json.loads((REPORTS / f"{m.group(1)}.json").read_text())))
         self.send(404, {"error": "not found"})
 
     def do_POST(self):
@@ -1565,7 +1612,7 @@ class Handler(BaseHTTPRequestHandler):
         if m:
             return self.send(200, set_status(m.group(1), body.get("status", "pending"), body.get("note", "")))
         if self.path == "/api/run":
-            return self.send(*start_job(body.get("report"), body.get("finding")))
+            return self.send(*start_job(body.get("report"), body.get("finding"), body.get("items")))
         if self.path == "/api/schedule":
             try:
                 return self.send(200, schedule.apply(body.get("mode"), body.get("weekday"), body.get("hour", 10),
