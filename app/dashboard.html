@@ -125,6 +125,16 @@ code { font: 12px var(--mono); }
 .cmd { display: flex; gap: 10px; align-items: center; background: var(--panel-2); border-radius: 8px; padding: 8px 8px 8px 12px; }
 .cmd code { flex: 1; line-height: 1.5; overflow-wrap: anywhere; }
 .cmd .acts { display: flex; gap: 6px; flex: none; }
+.picks { display: grid; gap: 2px; background: var(--panel-2); border-radius: 8px; padding: 6px 4px; }
+.picks .ph { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 0 8px 4px; font-size: 12px; color: var(--muted); }
+.pick { display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 8px; align-items: start; padding: 5px 8px; border-radius: 6px; font-size: 13px; cursor: pointer; }
+.pick:hover { background: var(--panel); }
+.pick input { margin: 3px 0 0; accent-color: var(--accent); }
+.pick b { font-weight: 600; overflow-wrap: anywhere; }
+.pick span { display: block; font-size: 12px; color: var(--muted); }
+.pick.off { cursor: default; opacity: .6; }
+.pick.off:hover { background: transparent; }
+.pick .why { color: var(--warn); }
 .tfoot { padding: 10px 14px; border-top: 1px solid var(--border); font-size: 12px; color: var(--faint); }
 .tfoot button.link { font-size: 12px; color: var(--faint); padding: 0; text-decoration: underline dotted; text-underline-offset: 3px; }
 .tfoot button.link:hover { color: var(--text); }
@@ -386,6 +396,7 @@ const dismissed = new Set();
 let runningSig = "";
 let state = { findings: {} }, report = null, reports = [], showResolved = false;
 const expanded = new Set();
+const picks = new Map();
 let live = null, liveOk = null, liveHistory = null, win = "15m", sched = null, tab = "perf";
 try { win = localStorage.getItem("mo.window") || win; tab = localStorage.getItem("mo.tab") || tab; } catch {}
 
@@ -954,6 +965,26 @@ function breakdown(fs) {
     ...Object.entries(rest).map(([a, n]) => `${n} de ${AREA_NOUN[a] || a}`)].filter(Boolean).join(" · ");
 }
 
+const pickable = f => (f.items || []).filter(i => !i.locked && !i.done);
+function pickedOf(f) {
+  if (!picks.has(f.id)) picks.set(f.id, new Set(pickable(f).filter(i => i.checked).map(i => i.key)));
+  const keys = new Set(pickable(f).map(i => i.key));
+  return [...picks.get(f.id)].filter(k => keys.has(k));
+}
+const commandOf = f => f.items ? [f.command, ...pickedOf(f)].join(" ") : f.command;
+
+function pickList(f) {
+  const sel = new Set(pickedOf(f)), live = f.items.filter(i => !i.done), n = pickable(f).length;
+  const rows = live.map(i => {
+    const off = !!i.locked, id = esc(f.id), key = esc(i.key);
+    return `<label class="pick ${off ? "off" : ""}"><input type="checkbox" data-pick="${id}" value="${key}" ${sel.has(i.key) ? "checked" : ""} ${off ? "disabled" : ""}>
+      <div><b>${esc(i.label || i.key)}</b><span>${esc(i.detail || "")}${off ? ` · <em class="why">no se puede borrar: ${esc(i.locked)}</em>` : ""}</span></div></label>`;
+  }).join("");
+  const gone = f.items.length - live.length;
+  return `<div class="picks"><div class="ph"><span>${sel.size} de ${n} elegidas${gone ? ` · ${gone} ya borradas` : ""}</span>
+    ${n ? `<span><button class="link" data-pick-all="${esc(f.id)}">Todas</button><button class="link" data-pick-none="${esc(f.id)}">Ninguna</button></span>` : ""}</div>${rows || `<span class="empty" style="padding:0 8px">Nada para elegir.</span>`}</div>`;
+}
+
 function rowActions(f, st, open) {
   const id = esc(f.id);
   if (st !== "pending") return `<button class="sec" data-id="${id}" data-set="pending">${st === "done" ? "Hecha" : "Ignorada"} · deshacer</button>`;
@@ -970,9 +1001,10 @@ function findingRow(f) {
   const note = sudo ? "Requiere sudo: el dashboard no lo ejecuta. Cópialo y córrelo en tu terminal."
     : f.risk === "bajo" ? "Comando que se va a ejecutar:" : "Comando que se va a ejecutar. Pide escribir EJECUTAR para confirmar.";
   const btns = sudo ? `<button class="sec" data-copy="${esc(f.command)}">Copiar</button>${st === "pending" ? `<button class="sec" data-id="${id}" data-set="done">Marcar hecho</button>` : ""}`
-    : st === "pending" && !runningFor(f.id) ? `<button class="primary sec" data-run="${id}">Ejecutar</button>` : "";
+    : st === "pending" && !runningFor(f.id) ? `<button class="primary sec" data-run="${id}" ${f.items && !pickedOf(f).length ? "disabled" : ""}>Ejecutar</button>` : "";
   const xp = open ? `<div class="xp">${f.detail ? `<div class="xd">${esc(f.detail)}</div>` : ""}
-    ${f.command ? `<div class="xn">${note}</div><div class="cmd"><code>${esc(f.command)}</code><span class="acts">${btns}</span></div>` : ""}</div>` : "";
+    ${f.items ? pickList(f) : ""}
+    ${f.command ? `<div class="xn">${note}</div><div class="cmd"><code>${esc(commandOf(f))}</code><span class="acts">${btns}</span></div>` : ""}</div>` : "";
   return `<div class="tr ${st === "pending" ? "" : "resolved"} ${open ? "open" : ""}"><div class="trow">
     <span class="ar">${AREAS[f.area] || esc(f.area)}</span>
     <div class="ti" data-expand="p:${id}" role="button" tabindex="0" aria-expanded="${open}"><b>${esc(f.title)}</b><span title="${esc(f.detail)}">${esc(f.detail)}</span></div>
@@ -1079,12 +1111,19 @@ function toggleExpand(key, refocus) {
 async function runFinding(f) {
   // Low-risk commands were already shown inline, so they run straight away; the rest go through the EJECUTAR prompt.
   if (f.risk !== "bajo") return openRun(f);
-  const r = await post("/api/run", { report: report.id, finding: f.id });
+  const r = await post("/api/run", { report: report.id, finding: f.id, items: f.items ? pickedOf(f) : undefined });
   const body = await r.json();
   if (!r.ok) return toast(body.error);
   jobs[body.id] = body; dismissed.delete(body.id);
   renderDock(); renderFindings(); pollJobs();
 }
+
+document.addEventListener("change", e => {
+  const id = e.target.dataset?.pick; if (!id) return;
+  const f = report.findings.find(x => x.id === id), set = new Set(pickedOf(f));
+  e.target.checked ? set.add(e.target.value) : set.delete(e.target.value);
+  picks.set(id, set); renderFindings();
+});
 
 document.addEventListener("keydown", e => {
   const ex = (e.key === "Enter" || e.key === " ") && e.target.closest?.(".ti[data-expand]");
@@ -1109,6 +1148,10 @@ document.addEventListener("click", async e => {
   else if (t.dataset.ack) setAck(t.dataset.ack, true);
   else if (t.dataset.unack) setAck(t.dataset.unack, false);
   else if (t.id === "toggleReviewed") { showReviewed = !showReviewed; renderSecurity(); }
+  else if (t.dataset.pickAll || t.dataset.pickNone) {
+    const f = report.findings.find(x => x.id === (t.dataset.pickAll || t.dataset.pickNone));
+    picks.set(f.id, new Set(t.dataset.pickAll ? pickable(f).map(i => i.key) : [])); renderFindings();
+  }
   else if (t.dataset.run) runFinding(report.findings.find(f => f.id === t.dataset.run));
   else if (t.dataset.openJob) openJob(t.dataset.openJob);
   else if (t.dataset.set) setStatus(t.dataset.id, t.dataset.set);
@@ -1132,7 +1175,7 @@ function openRun(f) {
   $("mTitle").textContent = f.title;
   $("mRisk").innerHTML = riskBadge(f);
   $("mDetail").textContent = f.detail || "";
-  $("mCmd").textContent = f.command;
+  $("mCmd").textContent = commandOf(f);
   $("mConfirm").innerHTML = manual
     ? `<div class="warn">Requiere <b>sudo</b>: el dashboard no lo ejecuta. Cópialo y córrelo en tu terminal; después márcalo como hecho.</div>`
     : risky
@@ -1194,6 +1237,7 @@ function renderDock() {
 async function onJobFinished(j) {
   toast(`${JOB_ICON[j.status] === "✔" ? "✔" : JOB_ICON[j.status]} ${j.title}`);
   if (j.finding === "__analysis__") { if (j.status === "ok") await init(); return; }
+  if (j.picked) report = await (await fetch(`/api/reports/${report.id}`)).json();
   state = await (await fetch("/api/state")).json(); renderFindings(); loadLive();
 }
 
@@ -1220,7 +1264,8 @@ const closeModal = () => { $("modalBg").classList.remove("open"); viewJobId = nu
 
 $("mRun").addEventListener("click", async () => {
   $("mRun").disabled = true;
-  const r = pendingRun.analysis ? await post("/api/analyze") : await post("/api/run", { report: report.id, finding: pendingRun.id });
+  const r = pendingRun.analysis ? await post("/api/analyze")
+    : await post("/api/run", { report: report.id, finding: pendingRun.id, items: pendingRun.items ? pickedOf(pendingRun) : undefined });
   const body = await r.json();
   if (!r.ok) { $("mState").textContent = body.error; $("mState").style.color = "var(--bad)"; $("mRun").disabled = false; return; }
   jobs[body.id] = body; dismissed.delete(body.id);

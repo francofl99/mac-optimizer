@@ -21,6 +21,9 @@ GIT_PID=$!
 CARGO="$(mktemp)"
 MAC_OPTIMIZER_PROJECT_DIRS="${PROJECT_DIRS[*]}" python3 "$HERE/cargo_targets.py" > "$CARGO" 2>&1 &
 CARGO_PID=$!
+BENV="$(mktemp)"
+MAC_OPTIMIZER_PROJECT_DIRS="${PROJECT_DIRS[*]}" python3 "$HERE/benv_instances.py" > "$BENV" 2>&1 &
+BENV_PID=$!
 
 {
 section "SYSTEM"
@@ -120,6 +123,9 @@ command -v orb >/dev/null && echo "OrbStack: $(orb status 2>/dev/null)  memory_m
 section "GIT REPOS (branches, worktrees)"
 wait "$GIT_PID" 2>/dev/null; cat "$GIT_REPOS"
 
+section "BENV INSTANCES (parallel branch environments)"
+wait "$BENV_PID" 2>/dev/null; cat "$BENV"
+
 section "HOMEBREW"
 if command -v brew >/dev/null; then
   export HOMEBREW_NO_AUTO_UPDATE=1
@@ -145,6 +151,6 @@ echo "Total processes: $(ps -A | wc -l | tr -d ' ')"
 echo "Helper/Renderer procs: $(ps -Axo comm= | grep -ciE 'helper|renderer')"
 section "DONE"
 } > "$OUT" 2>&1
-rm -f "$DOCKER_DF" "$GIT_REPOS" "$CARGO"
+rm -f "$DOCKER_DF" "$GIT_REPOS" "$CARGO" "$BENV"
 
 echo "$OUT"

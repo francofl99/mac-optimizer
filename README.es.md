@@ -5,7 +5,7 @@
 Repaso periódico del Mac (RAM, swap, CPU, batería, disco, Docker, repos git y arranque) con un dashboard local. [Claude Code](https://claude.com/claude-code) analiza los datos y propone acciones. Tú revisas cada una y la ejecutas desde un botón, con confirmación.
 
 > [!WARNING]
-> Algunas acciones borran datos (caches, imágenes o volúmenes de Docker, `node_modules`, la caché de `target/` de Rust, branches y worktrees de git). Nada se ejecuta sin tu confirmación, pero eres responsable de lo que apruebas. Lee cada comando antes de ejecutarlo. Se entrega tal cual, sin garantía (ver [LICENSE](LICENSE)).
+> Algunas acciones borran datos (caches, imágenes o volúmenes de Docker, `node_modules`, la caché de `target/` de Rust, branches y worktrees de git, instancias de [benv](https://github.com/francofl99/benv)). Nada se ejecuta sin tu confirmación, pero eres responsable de lo que apruebas. Lee cada comando antes de ejecutarlo. Se entrega tal cual, sin garantía (ver [LICENSE](LICENSE)).
 
 ## Cómo funciona
 
@@ -25,6 +25,7 @@ state.json / exec.log ◄──────────────────�
 | `bin/git_repos.py` | Clasifica por riesgo las branches y worktrees locales de git, sin usar la red. Nunca sugiere branches en uso, protegidas, con commits sin pushear o que solo existen en local | No |
 | `bin/git_cleanup.py` | Aplica esas listas desde el dashboard. Omite las branches que cambiaron desde el escaneo y guarda un script para restaurar las borradas | No |
 | `bin/cargo_targets.py` | Encuentra las carpetas `target/` de Rust/Cargo y, desde el dashboard, borra solo su caché de compilación. Las apps y bundles ya compilados (el `.app` de Tauri) se mantienen | No |
+| `bin/benv_instances.py` | Lista las instancias de benv (tamaño, contenedores corriendo, días sin uso) y borra con `benv rm` las que elijas en el dashboard. Nunca toca instancias con cambios sin commitear o commits sin pushear | No |
 | `bin/analyze.sh` | `collect.sh` + `claude -p` en modo headless. Claude solo puede leer archivos y escribir en `reports/` | Sí |
 | `app/server.py` + `app/dashboard.html` | Dashboard en `localhost:8765`: métricas en vivo, hallazgos, botón Ejecutar, acciones en paralelo, historial, chequeos de seguridad | No |
 
@@ -106,6 +107,7 @@ Variables de entorno:
 - `MAC_OPTIMIZER_CARGO_MIN_GB`: caché mínima de un `target/` para sugerir limpiarla. Por defecto: `0.5`.
 - `MAC_OPTIMIZER_PROJECT_DIRS`: dónde buscar `node_modules` viejos, carpetas `target/` de Rust y repos git. Por defecto: `~/Projects ~/Desktop ~/code`.
 - `MAC_OPTIMIZER_BRANCH_DAYS`: días sin commits, cambios ni checkouts para que una branch o un worktree cuente como inactivo. Por defecto: 30.
+- `MAC_OPTIMIZER_BENV_DAYS`: días sin commits ni checkouts para que una instancia de benv venga marcada para borrar. Por defecto: 14.
 - `MAC_OPTIMIZER_MODEL`: modelo para el análisis headless.
 
 ## Chequeos de seguridad
